@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Trade History{% endblock %}
+{% block content %}
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <h2 style="font-size:17px;">Trade History</h2>
+        <p style="margin:2px 0 0; color:var(--text-secondary); font-size:13px;">Reconciliation-safe ledger of all closed trades.</p>
+      </div>
+    </div>
+
+    <div id="trades-empty" class="empty-state" hidden>
+      <div class="icon">📦</div>
+      <h3>No Trade History. Head to the Trade Console.</h3>
+      <p>No closed trades yet.</p>
+    </div>
+
+    <div class="table-scroll" id="trades-table-wrap">
+      <table id="trades-table">
+        <thead>
+          <tr>
+            <th>Trade ID</th><th>Instrument</th><th>Date</th><th>Entry</th><th>Exit</th>
+            <th>Result</th><th>P&amp;L</th><th>Compliance</th><th>Violation</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="pagination" style="display:flex; align-items:center; justify-content:space-between; margin-top:16px; flex-wrap:wrap; gap:10px;">
+      <span class="muted small" id="total-arrivals"></span>
+      <div id="page-buttons" style="display:flex; gap:6px;"></div>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/history-page.js"></script>
+{% endblock %}

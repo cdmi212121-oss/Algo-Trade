@@ -1,0 +1,45 @@
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Runtime data (created automatically, not source)
+logs/
+price_history/
+simulator/logs/
+simulator/price_history/
+**/tools/cache/
+
+# Claude Code's own internal state - not app code
+.claude/
+
+# Large local-only assets - not needed to run the app, too big/irrelevant for GitHub
+tools/models/
+tools/fonts/
+
+# Course source material - the user's own paid course content, not app code;
+# keep it off GitHub regardless of repo visibility
+Topic *.txt
+Algo Strategy/
+transcripts/
+*.mp4
+Algo_Explanation_Gujarati.pdf
+
+# Editors / OS cruft
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+*.db
+*.sqlite
+*.sqlite3

@@ -1,0 +1,7 @@
+requests>=2.31
+smartapi-python>=1.5
+pyotp>=2.9
+logzero>=1.7
+websocket-client>=1.7
+python-dotenv>=1.0
+flask>=3.0

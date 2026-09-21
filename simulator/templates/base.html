@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Dashboard{% endblock %} — NAYA</title>
+  <link rel="stylesheet" href="/static/app.css">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row1">
+      <div class="brand">
+        <svg viewBox="0 0 32 32" fill="none"><path d="M4 24C10 24 10 8 16 8C22 8 22 24 28 24" stroke="#e0393f" stroke-width="3.5" stroke-linecap="round"/><path d="M4 8C10 8 10 24 16 24C22 24 22 8 28 8" stroke="#17a35a" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/></svg>
+        <span>NAYA</span>
+      </div>
+      <span class="pill" id="tb-trades">&mdash;/&mdash; Trades</span>
+      <span class="pill badge-neutral" id="tb-market">&mdash;</span>
+      <span class="pill pill-blue oxygen-pill" id="tb-oxygen">
+        <span>Daily Oxygen</span>
+        <span style="display:flex;align-items:center;"><b id="tb-oxygen-pct">&mdash;%</b><span class="bar"><span class="bar-fill" id="tb-oxygen-bar" style="width:0%"></span></span></span>
+      </span>
+      <div class="topbar-right">
+        <button class="icon-btn" title="Notifications" aria-label="Notifications">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 4 1.5 5 2 6H4c.5-1 2-2 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        </button>
+        <span class="pill" id="tb-safe">&mdash;</span>
+        <a class="user-chip" href="/profile">
+          <span class="avatar" id="tb-avatar">?</span>
+          <span id="tb-clientcode">Profile</span>
+        </a>
+      </div>
+    </div>
+    <nav class="topbar-row2">
+      <a href="/" class="nav-link {{ 'active' if active == 'dashboard' else '' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
+        Dashboard
+      </a>
+      <a href="/trade" class="nav-link {{ 'active' if active == 'trade' else '' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>
+        Trade Console
+      </a>
+      <a href="/positions" class="nav-link {{ 'active' if active == 'positions' else '' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="16" width="18" height="4" rx="1"/></svg>
+        Active Position
+      </a>
+      <a href="/history" class="nav-link {{ 'active' if active == 'history' else '' }}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+        Trade History
+      </a>
+      <div class="topbar-row2-right">
+        <a href="/violations" class="text-link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+          Violation Log
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="{% block main_class %}content{% endblock %}">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="/static/common.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

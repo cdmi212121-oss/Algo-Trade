@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Violation Log{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Violation Log</h1>
+    <p>Every time the algo or a manual order was blocked by a risk rule, and why.</p>
+  </header>
+
+  <div class="panel">
+    <div id="violations-empty" class="empty-state" hidden>
+      <div class="icon">✅</div>
+      <h3>No violations. Keep your discipline strong.</h3>
+      <p>Blocked trade attempts will show up here with the reason.</p>
+    </div>
+    <div class="table-scroll" id="violations-table-wrap">
+      <table id="violations-table">
+        <thead><tr><th>Time</th><th>Instrument</th><th>Reason</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/violations-page.js"></script>
+{% endblock %}

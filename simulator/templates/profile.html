@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Profile{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Profile</h1>
+  </header>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Broker connection</h2></div>
+    <p>Angel One client code: <strong id="p-client">&mdash;</strong></p>
+    <p class="muted small">Credentials are read from environment variables / <code>.env</code> — never shown here.</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Trading capital</h2></div>
+    <div class="profile-form">
+      <div class="field">
+        <label>Trading capital (₹)</label>
+        <input id="p-capital" type="number" step="1000" min="1000">
+        <div class="hint">Changing this shifts your baseline by the difference - today's realized P&amp;L isn't reset.</div>
+      </div>
+      <div class="field">
+        <label>Deployed / tradable capital (%)</label>
+        <input id="p-tradable" type="number" step="1" min="1" max="100">
+        <div class="hint">Per the strategy's money management rule: keep the rest in reserve. Risk-per-trade and daily-loss-cap are both sized off this deployed portion, not your full capital.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Risk settings</h2></div>
+    <div class="profile-form">
+      <div class="field">
+        <label>Risk per trade (% of deployed capital)</label>
+        <input id="p-risk" type="number" step="0.1" min="0.1">
+      </div>
+      <div class="field">
+        <label>Max daily loss (% of deployed capital)</label>
+        <input id="p-maxloss" type="number" step="0.1" min="0.1">
+      </div>
+      <div class="field">
+        <label>Max trades per day</label>
+        <input id="p-maxtrades" type="number" step="1" min="1">
+      </div>
+      <div class="field">
+        <label>Max concurrent positions (across all instruments combined)</label>
+        <input id="p-maxpos" type="number" step="1" min="1">
+      </div>
+      <button class="btn btn-primary" id="p-save">Save</button>
+      <div class="form-message" id="p-message"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Auto-trading instruments</h2></div>
+    <p class="muted small" style="margin-top:0;">Which symbols the algo is allowed to auto-trade. Manual trading (Market and GTT) from the Trade Console works on any of the three regardless of this setting.</p>
+    <div id="p-symbols-checks" style="display:flex; gap:20px; margin:12px 0;"></div>
+    <button class="btn btn-primary" id="p-save-symbols">Save instruments</button>
+    <div class="form-message" id="p-symbols-message"></div>
+    <p class="muted small">Market hours: <strong id="p-hours">&mdash;</strong></p>
+  </section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/profile-page.js"></script>
+{% endblock %}

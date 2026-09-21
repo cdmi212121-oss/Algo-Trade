@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Active Position{% endblock %}
+{% block content %}
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <h2 style="font-size:17px;">Active Positions</h2>
+        <p style="margin:2px 0 0; color:var(--text-secondary); font-size:13px;">Live simulated trades - SL &amp; Target are locked.</p>
+      </div>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span class="muted small">Positions</span>
+        <span class="pill" id="day-pnl-pill">Day P&amp;L &mdash;</span>
+      </div>
+    </div>
+
+    <div id="positions-empty" class="empty-state" hidden>
+      <div class="icon">📦</div>
+      <h3>No active positions. Head to the Trade Console.</h3>
+      <p>Track equity purchases to optimize your trading strategy</p>
+    </div>
+
+    <div class="table-scroll" id="positions-table-wrap">
+      <table id="positions-table">
+        <thead>
+          <tr>
+            <th>Trade ID</th><th>Instrument</th><th>Date</th><th>Qty</th><th>Entry</th>
+            <th>Stop-Loss</th><th>Target</th><th>Live Price</th><th>Result</th><th>P&amp;L</th><th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/positions-page.js"></script>
+{% endblock %}

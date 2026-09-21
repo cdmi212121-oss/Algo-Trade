@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Trade Console{% endblock %}
+{% block main_class %}content with-sidebar{% endblock %}
+{% block content %}
+  <div class="console">
+    <aside class="console-sidebar">
+      <p class="stat-label" style="margin-bottom:10px;">Instruments</p>
+      <div class="symbol-list" id="symbol-list">
+        {% for symbol in tradable_symbols %}
+        <button class="symbol-row" data-symbol="{{ symbol }}">
+          <span>
+            <span class="name">{{ symbol }}</span><br>
+            <span class="sub">NSE &middot; INDEX</span>
+          </span>
+          <span class="px" id="wl-px-{{ symbol }}">&mdash;</span>
+        </button>
+        {% endfor %}
+      </div>
+    </aside>
+
+    <section class="console-main">
+      <div class="panel-header">
+        <h2 id="chain-title">Select an instrument</h2>
+        <div class="controls">
+          <select id="candle-interval">
+            <option value="1">1 min</option>
+            <option value="5">5 min</option>
+            <option value="15">15 min</option>
+          </select>
+        </div>
+      </div>
+      <div id="candles-chart" style="margin-bottom:16px;"></div>
+
+      <p class="muted small" style="margin:0 0 10px;">
+        Spot: <b id="chain-spot">&mdash;</b> &middot; Expiry: <b id="chain-expiry">&mdash;</b> &middot; Lot size: <b id="chain-lot">&mdash;</b>
+      </p>
+      <div class="field" style="max-width:220px;">
+        <label>Search strike price</label>
+        <input id="strike-search" type="number" step="any" placeholder="e.g. 23500">
+      </div>
+      <div class="table-scroll chain-scroll">
+        <table id="chain-table">
+          <thead>
+            <tr><th>OI</th><th>Call LTP</th><th></th><th>Strike</th><th></th><th>Put LTP</th><th>OI</th></tr>
+          </thead>
+          <tbody><tr><td colspan="7" class="muted">Pick an instrument on the left</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <aside class="console-right">
+      <div class="panel-header" style="margin-bottom:10px;">
+        <h2>Current Price</h2>
+        <span class="stat-delta" id="cp-change"></span>
+      </div>
+      <p class="stat-value" id="cp-ltp" style="margin-bottom:12px;">&mdash;</p>
+      <div style="display:flex; gap:20px; margin-bottom:18px;">
+        <div><div class="stat-label">Day High</div><div style="font-weight:700;" id="cp-high">&mdash;</div></div>
+        <div><div class="stat-label">Day Low</div><div style="font-weight:700;" id="cp-low">&mdash;</div></div>
+      </div>
+
+      <div class="side-toggle">
+        <button class="buy active" id="side-buy" data-side="BUY">Buy</button>
+        <button class="sell" id="side-sell" data-side="SELL">Sell</button>
+      </div>
+
+      <div class="order-tabs">
+        <div class="order-tab active" data-mode="MARKET">Market</div>
+        <div class="order-tab" data-mode="GTT">GTT</div>
+      </div>
+
+      <div class="field">
+        <label>Quantity (lots)</label>
+        <input id="f-lots" type="number" min="1" step="1" value="1">
+      </div>
+
+      <div class="field" id="f-trigger-field" hidden>
+        <label>Trigger price (₹)</label>
+        <input id="f-trigger" type="number" step="0.05">
+        <div class="hint">Order fills once the option's LTP reaches this price.</div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label>Target (₹)</label>
+          <input id="f-target" type="number" step="0.05">
+        </div>
+        <div class="field">
+          <label>Stop loss (₹)</label>
+          <input id="f-sl" type="number" step="0.05">
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="f-submit" disabled>Select an option first</button>
+      <div class="form-message" id="form-message" style="margin-top:8px; font-weight:600; font-size:13px;"></div>
+
+      <div class="info-box">
+        <strong>Post-execution lock</strong>
+        After execution, your stop-loss and target are immutable. NAYA protects you from impulsive overrides.
+      </div>
+
+      <div class="panel" style="margin-top:18px;">
+        <div class="panel-header"><h2>Trade Approval Engine</h2></div>
+        <div class="approval-checklist" id="approval-checklist"></div>
+        <div class="approval-stats">
+          <div class="approval-stat"><div class="label">Per-trade budget</div><div class="value" id="ap-budget">&mdash;</div></div>
+          <div class="approval-stat"><div class="label">Trade risk</div><div class="value" id="ap-risk">&mdash;</div></div>
+          <div class="approval-stat"><div class="label">Oxygen remaining</div><div class="value" id="ap-oxygen">&mdash;</div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/trade-page.js"></script>
+{% endblock %}

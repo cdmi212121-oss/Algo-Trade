@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}P&amp;L{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>P&amp;L</h1>
+  </header>
+
+  <section class="tiles">
+    <div class="stat-tile compact">
+      <div class="stat-label">Starting capital</div>
+      <div class="stat-value" id="pnl-starting">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Current equity</div>
+      <div class="stat-value" id="pnl-equity">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Total P&amp;L</div>
+      <div class="stat-value" id="pnl-total">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Win rate</div>
+      <div class="stat-value" id="pnl-winrate">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Total trades</div>
+      <div class="stat-value" id="pnl-count">&mdash;</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Equity curve</h2></div>
+    <div class="chart-scroll">
+      <svg id="pnl-chart" class="chart-svg" viewBox="0 0 900 260" preserveAspectRatio="none"></svg>
+    </div>
+    <p class="muted small">Cumulative equity after each closed paper trade.</p>
+  </section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/pnl-page.js"></script>
+{% endblock %}

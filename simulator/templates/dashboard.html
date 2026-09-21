@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+  <header class="page-header">
+    <h1>Live Market Dashboard</h1>
+    <span class="muted" id="updated-at">connecting&hellip;</span>
+  </header>
+
+  <section class="tiles" aria-label="Live index prices">
+    {% for symbol in index_symbols %}
+    <div class="stat-tile" data-symbol="{{ symbol }}">
+      <div class="stat-label">{{ symbol }}</div>
+      <div class="stat-value" id="value-{{ symbol }}">&mdash;</div>
+      <div class="stat-delta" id="delta-{{ symbol }}"></div>
+      <svg class="sparkline" id="spark-{{ symbol }}" viewBox="0 0 240 48" preserveAspectRatio="none"></svg>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="tiles" aria-label="Account summary">
+    <div class="stat-tile compact">
+      <div class="stat-label">Open positions</div>
+      <div class="stat-value" id="summary-open">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Day P&amp;L</div>
+      <div class="stat-value" id="summary-pnl">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Current equity</div>
+      <div class="stat-value" id="summary-equity">&mdash;</div>
+    </div>
+    <div class="stat-tile compact">
+      <div class="stat-label">Win rate</div>
+      <div class="stat-value" id="summary-winrate">&mdash;</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Candlestick chart</h2>
+      <div class="controls">
+        <select id="candle-symbol">
+          {% for symbol in index_symbols %}
+          <option value="{{ symbol }}">{{ symbol }}</option>
+          {% endfor %}
+        </select>
+        <select id="candle-interval">
+          <option value="1">1 min</option>
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+        </select>
+      </div>
+    </div>
+    <div id="candles-chart"></div>
+    <p class="muted small">Built from our own polled prices, not official exchange candles.</p>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Equity curve</h2></div>
+    <div class="chart-scroll">
+      <svg id="pnl-chart" class="chart-svg" viewBox="0 0 900 240" preserveAspectRatio="none"></svg>
+    </div>
+  </section>
+{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dashboard-page.js"></script>
+{% endblock %}
