@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import csv
 import glob
+import logging
 import os
+import sys
 from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
@@ -28,7 +30,22 @@ from engine import INDEX_SYMBOLS, TRADABLE_SYMBOLS, TradingEngine
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # never let browsers cache stale JS/CSS during active development
-engine = TradingEngine()
+
+try:
+    engine = TradingEngine()
+except Exception:
+    # Fail loudly and clearly in the platform's runtime logs (e.g. Voroa)
+    # rather than an unadorned traceback - this only happens for a missing/
+    # invalid env var (see angel_data.py's _require_env), never a partial
+    # or slow Angel One login (that happens lazily, in the background
+    # thread, well after this point).
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger("app").critical(
+        "Failed to initialize the trading engine at startup - check that "
+        "ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, and ANGEL_TOTP_SECRET "
+        "are all set correctly.", exc_info=True,
+    )
+    sys.exit(1)
 
 TRADE_LOG_DIR = "logs"
 PRICE_HISTORY_DIR = "price_history"
