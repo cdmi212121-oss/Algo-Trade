@@ -18,6 +18,12 @@ import threading
 import time
 from collections import deque
 from datetime import datetime
+from datetime import time as dtime
+
+try:
+    import winsound  # Windows-only stdlib module - audible alert on auto-entry
+except ImportError:
+    winsound = None  # e.g. Voroa's Linux container - alert becomes a no-op there
 
 from angel_data import AngelOneClient
 from candles import candles_from_ticks
@@ -40,6 +46,14 @@ TRADABLE_SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX"]  # option chains available f
 SPARKLINE_POINTS = 60
 PRICE_HISTORY_DIR = "price_history"
 
+# Per explicit user instruction: never call Angel One's API at all outside
+# this window - no spot poll, no option chain fetch, nothing. Slightly
+# wider than config.market_open/market_close (9:15/15:30, used for the
+# strategy's own trading-hours gate) since the user asked specifically for
+# 9:10 as the data-fetch start.
+DATA_POLL_START = dtime(9, 10)
+DATA_POLL_END = dtime(15, 30)
+
 
 class TradingEngine:
     def __init__(self):
@@ -61,6 +75,20 @@ class TradingEngine:
         self._position_ticks: dict[str, deque] = {}  # per open position, for scale-out candle detection
         self.order_events: deque = deque(maxlen=100)  # for the UI's order-placed/filled/rejected/cancelled toasts
         self._next_event_id = 1
+
+    def _alert_position_created(self) -> None:
+        """Audible alert the moment the algo itself opens a position (auto
+        entry or a triggered GTT) - so it doesn't take watching the
+        dashboard or asking to notice. Never let a sound failure (e.g. no
+        audio device, or running on a non-Windows host) break the engine
+        loop - it's a nice-to-have, not core logic."""
+        if winsound is None:
+            return
+        try:
+            for _ in range(3):
+                winsound.Beep(1500, 300)
+        except Exception:
+            pass
 
     def _log_event(self, trade_id: str, event_type: str, message: str) -> None:
         with self.lock:
@@ -95,8 +123,27 @@ class TradingEngine:
         now_dt = datetime.now()
         now = now_dt.time()
 
-        # Index spot prices - always polled, drives dashboard tiles/candles
-        # regardless of whether the algo/options side is active.
+        with self.lock:
+            have_any_snapshot = bool(self.spot_snapshot) and bool(self.option_snapshots)
+        if not (DATA_POLL_START <= now <= DATA_POLL_END) and have_any_snapshot:
+            # Outside 9:10-15:30 and we already have at least one snapshot -
+            # don't call Angel One's API again (no spot poll, no option
+            # chain fetch). Dashboard keeps showing whatever was last
+            # fetched; last_updated still advances so /health and the
+            # dashboard don't read this as the engine being dead, just quiet
+            # by design.
+            with self.lock:
+                self.last_updated = now_dt.isoformat(timespec="seconds")
+                self.market_open_now = False
+            return
+        # Otherwise (inside the window, OR outside it but we've never
+        # fetched anything yet this process) - fall through and fetch once,
+        # so a restart outside market hours still shows real previous-
+        # session data instead of staying blank all night.
+
+        # Index spot prices - always polled (within the window above),
+        # drives dashboard tiles/candles regardless of whether the
+        # algo/options side is active.
         spot = self.client.get_spot_snapshot(INDEX_SYMBOLS)
         with self.lock:
             for symbol, data in spot.items():
@@ -192,6 +239,7 @@ class TradingEngine:
                     self._log_event(pos.trade_id, "FILLED",
                                       f"GTT triggered: {pos.side.value} {pos.qty} @ {pos.entry_price:.2f}")
                     log.info("[GTT FILLED] %s %s qty=%d @ %.2f", key, pos.side.value, pos.qty, pos.entry_price)
+                    self._alert_position_created()
 
     def _manage_open_positions(self, now_dt: datetime) -> None:
         """Momentum-based scale-out (§8) for positions already open, whether
@@ -259,6 +307,7 @@ class TradingEngine:
                     self.risk.record_trade_opened()
                 log.info("[AUTO ENTRY] %s %s qty=%d @ %.2f SL=%.2f TGT=%.2f (%s)",
                           key, sig.side.value, qty, sig.entry_price, sig.stop_loss, sig.target, sig.reason)
+                self._alert_position_created()
 
     def _append_price_history(self, ts: datetime, spot: dict[str, dict]) -> None:
         import csv

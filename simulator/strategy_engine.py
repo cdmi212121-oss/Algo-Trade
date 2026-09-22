@@ -5,9 +5,15 @@ this module implements its "Full entry pipeline" section:
 
   1. A swing tracker on the underlying index's own tick series (candle-based
      zigzag: a swing high/low confirms after 3+ consecutive candles move
-     away from it - see swing.py).
+     away from it - see swing.py), at a single candle size by clock time
+     per strategy_rules.md §2: 1-minute before 10:30, 3-minute after (see
+     candle_interval()). An earlier version of this file scanned multiple
+     candle sizes at once per a since-reverted user instruction - reverted
+     back to the literal single-timeframe-by-clock-time rule on explicit
+     instruction to follow the course strategy exactly, not go outside it.
   2. A second swing tracker on the specific option's premium tick series
-     (the strike currently selected by strike_selection.py).
+     (the strike currently selected by strike_selection.py), at that same
+     candle size.
   3. Strike selection: near-ATM window for Nifty/Bank Nifty, switching to
      the first ITM strike the day before/morning of expiry, ATM after noon
      on expiry day; a narrow one-strike window for Sensex, expiry-adjacent
@@ -25,19 +31,24 @@ this module implements its "Full entry pipeline" section:
      ride to the fixed target as a backstop). Called by engine.py once per
      tick for each open position.
 
-One thing from the source material is deliberately NOT implemented here,
-noted rather than silently dropped: the 15-minute higher-timeframe
-"directional bias" check (checked 4x/day in the transcript) is documented
-as context, not a hard entry filter, and the doc's own final pipeline
-doesn't list it as a required AND condition - so it's omitted rather than
-guessed at. The opening-15-minutes gap-up/gap-down zone-touch special case
-(Topic 7) also isn't separately coded; the generic swing tracker naturally
-can't confirm any swing until enough candles exist anyway, which covers
-most of the same ground without hand-coding the zone-specific scenarios.
+The 15-minute higher-timeframe "directional bias" check (§2) IS implemented
+(see _maybe_update_bias/BIAS_CHECK_TIMES): 4x/day, at 11:30/12:30/13:30/14:30,
+it reads the 15-min chart's current swing direction and uses it as a filter
+- an entry whose direction contradicts the standing 15-min bias is skipped.
+This matches the transcript's own framing exactly: bias is a context filter
+on top of the 1-min/3-min entry trigger, not a replacement entry timeframe
+and not a required AND condition before the first checkpoint of the day.
+
+The opening-15-minutes gap-up/gap-down zone-touch special case (Topic 7)
+still isn't separately coded; the generic swing tracker naturally can't
+confirm any swing until enough candles exist anyway, which covers most of
+the same ground without hand-coding the zone-specific scenarios.
 """
 
 from __future__ import annotations
 
+import csv
+import os
 from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -49,10 +60,18 @@ from paper_broker import Side
 from strike_selection import is_expiry_day, select_strike
 from swing import SwingTracker, candle_bias
 
+PREMIUM_HISTORY_DIR = "price_history"
+
 CANDLE_SWITCH_TIME = time(10, 30)
 SIDEWAYS_WINDOW = (time(11, 30), time(13, 30))
 SLOW_DIRECTIONAL_WINDOW = (time(13, 30), time(15, 30))
 MAX_PREMIUM_TICKS = 2000  # per watched instrument per day - plenty for intraday candles
+
+# 15-minute directional-bias context check (§2): re-evaluated 4x/day at
+# these times, using the 15-min chart's current swing-leg direction as a
+# call-lean/put-lean bias filter on top of the 1-min/3-min entry trigger.
+BIAS_CHECK_TIMES = [time(11, 30), time(12, 30), time(13, 30), time(14, 30)]
+BIAS_CANDLE_INTERVAL = 15
 
 MIN_FAVORABLE_MOVE = 15.0  # points of unrealized profit before scale-out can trigger (§8)
 SCALE_OUT_FRACTION = 0.75  # book ~70-80% on the first consolidation signal (§8)
@@ -91,12 +110,49 @@ def candle_interval(now: time) -> int:
     return 1 if now < CANDLE_SWITCH_TIME else 3
 
 
+def _premium_log_path(symbol: str, option_type: str, day: str) -> str:
+    return os.path.join(PREMIUM_HISTORY_DIR, f"PREMIUM_{symbol}_{option_type}_{day}.csv")
+
+
+def _load_premium_ticks(symbol: str, option_type: str, day: str) -> list[tuple[datetime, float]]:
+    """Reload today's premium ticks from disk - so a server restart doesn't
+    lose the option premium's swing history the way it would if this only
+    lived in memory (the underlying index's history already survives
+    restarts this same way, via candles.load_ticks/price_history/*.csv)."""
+    path = _premium_log_path(symbol, option_type, day)
+    if not os.path.exists(path):
+        return []
+    ticks = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            ticks.append((datetime.fromisoformat(row["timestamp"]), float(row["ltp"])))
+    return ticks
+
+
+def _append_premium_tick(symbol: str, option_type: str, day: str, ts: datetime, ltp: float) -> None:
+    os.makedirs(PREMIUM_HISTORY_DIR, exist_ok=True)
+    path = _premium_log_path(symbol, option_type, day)
+    is_new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if is_new:
+            writer.writerow(["timestamp", "ltp"])
+        writer.writerow([ts.isoformat(timespec="seconds"), ltp])
+
+
 class StrategyEngine:
     def __init__(self):
-        self._underlying_trackers: dict[str, SwingTracker] = {}
-        self._premium_trackers: dict[tuple[str, str], SwingTracker] = {}
+        self._underlying_trackers: dict[tuple[str, int], SwingTracker] = {}
+        self._premium_trackers: dict[tuple[str, str, int], SwingTracker] = {}
+        # Raw premium ticks are shared across every interval (candle size is
+        # only a bucketing choice made afterwards) and persisted to disk -
+        # see _load_premium_ticks/_append_premium_tick - so a restart
+        # reloads today's history instead of starting empty.
         self._premium_ticks: dict[tuple[str, str], deque] = {}
         self._scaled_out: set[str] = set()  # position keys already scaled out once
+        self._directional_bias: dict[str, Optional[str]] = {}  # per symbol: "up"/"down"/None
+        self._bias_checked_today: dict[str, set] = {}  # per symbol: which of today's 4 checkpoints ran
+        self._bias_day: Optional[date] = None
 
     def clear_position_state(self, position_key: str) -> None:
         """Call once a position is fully closed, so its key can be reused
@@ -124,6 +180,27 @@ class StrategyEngine:
             return {"action": "partial_exit", "fraction": SCALE_OUT_FRACTION}
         return None
 
+    def _maybe_update_bias(self, symbol: str, now: time) -> None:
+        """Re-evaluate the 15-min directional bias once we cross each of
+        today's 4 checkpoints (§2), reading the 15-min chart's current
+        swing-leg direction. Resets at day-rollover so yesterday's bias
+        never leaks into today."""
+        today = date.today()
+        if self._bias_day != today:
+            self._bias_day = today
+            self._directional_bias = {}
+            self._bias_checked_today = {}
+
+        checked = self._bias_checked_today.setdefault(symbol, set())
+        for checkpoint in BIAS_CHECK_TIMES:
+            if now >= checkpoint and checkpoint not in checked:
+                candles_15m = build_candles(symbol, today.isoformat(), BIAS_CANDLE_INTERVAL)
+                if len(candles_15m) >= 4:
+                    bias_tracker = SwingTracker()
+                    bias_tracker.load_history(candles_15m)
+                    self._directional_bias[symbol] = bias_tracker.direction
+                checked.add(checkpoint)
+
     def _session_gate(self, now: time, expiry_today: bool) -> tuple[bool, float]:
         """(allowed, size_multiplier)."""
         start, end = SIDEWAYS_WINDOW
@@ -135,10 +212,22 @@ class StrategyEngine:
         return True, 1.0
 
     def _watch_premium(self, symbol: str, option_type: str, quote, now: datetime, interval: int) -> SwingTracker:
-        key = (symbol, option_type)
-        ticks = self._premium_ticks.setdefault(key, deque(maxlen=MAX_PREMIUM_TICKS))
+        tick_key = (symbol, option_type)
+        day = date.today().isoformat()
+        ticks = self._premium_ticks.get(tick_key)
+        if ticks is None:
+            # Cold start for this instrument today (fresh process, or first
+            # time this option_type came up) - reload persisted history
+            # before adding today's fresh tick, instead of starting empty.
+            ticks = deque(maxlen=MAX_PREMIUM_TICKS)
+            for ts, ltp in _load_premium_ticks(symbol, option_type, day):
+                ticks.append((ts, ltp))
+            self._premium_ticks[tick_key] = ticks
+
         ticks.append((now, quote.ltp))
-        tracker = self._premium_trackers.setdefault(key, SwingTracker())
+        _append_premium_tick(symbol, option_type, day, now, quote.ltp)
+
+        tracker = self._premium_trackers.setdefault((symbol, option_type, interval), SwingTracker())
         tracker.load_history(candles_from_ticks(list(ticks), interval))
         return tracker
 
@@ -146,23 +235,29 @@ class StrategyEngine:
         symbol = snapshot.symbol
         now_dt = datetime.now()
         now = now_dt.time()
-        interval = candle_interval(now)
+        interval = candle_interval(now)  # 1-min before 10:30, 3-min after - §2, literal
         expiry_today = is_expiry_day(snapshot)
 
         allowed, size_multiplier = self._session_gate(now, expiry_today)
         if not allowed:
             return []
 
+        self._maybe_update_bias(symbol, now)
+
         underlying_candles = build_candles(symbol, date.today().isoformat(), interval)
         if len(underlying_candles) < 4:
             return []  # not enough history yet to have confirmed any swing today
 
-        underlying_tracker = self._underlying_trackers.setdefault(symbol, SwingTracker())
+        underlying_tracker = self._underlying_trackers.setdefault((symbol, interval), SwingTracker())
         underlying_tracker.load_history(underlying_candles)
 
         underlying_break = underlying_tracker.check_break(snapshot.underlying_value)
         if underlying_break is None:
             return []
+
+        bias = self._directional_bias.get(symbol)
+        if bias is not None and bias != underlying_break:
+            return []  # contradicts the standing 15-min directional bias (§2) - skip
 
         option_type = "CE" if underlying_break == "up" else "PE"
         quote = select_strike(snapshot, option_type, now)

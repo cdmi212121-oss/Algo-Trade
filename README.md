@@ -77,8 +77,9 @@ from earlier experiments).
 ## 4. Requirements
 
 - Python 3.11+
-- See `requirements.txt` (Flask, requests, smartapi-python, pyotp, logzero, websocket-client, python-dotenv)
+- See `requirements.txt` (Flask, requests, smartapi-python, pyotp, logzero, websocket-client, python-dotenv, gunicorn)
 - No Node.js/npm — there is no separate frontend build.
+- Gunicorn is Unix-only (depends on `fcntl`) — used for production (Voroa); local dev still uses `python simulator/app.py` via Flask's own dev server, which works fine on Windows.
 
 ## 5. Local installation
 
@@ -162,19 +163,41 @@ either restart your terminal or use the full path above.
 ## 13. Voroa deployment
 
 **One service needed**, since the web layer and trading engine are one
-process (see Architecture):
+process (see Architecture). Production runs under Gunicorn, not the Flask
+dev server:
 
+- **Repository**: `cdmi212121-oss/Algo-Trade`
+- **Branch**: `main`
+- **Root Directory**: `/`
 - **Type**: Web service (needs a public HTTP port — the dashboard is how you interact with it)
-- **Build command**: `pip install -r requirements.txt`
-- **Start command**: `python simulator/app.py`
-- **Environment variables to add in Voroa**: `ANGEL_API_KEY`, `ANGEL_CLIENT_CODE`, `ANGEL_PIN`, `ANGEL_TOTP_SECRET` (Voroa should inject `PORT` automatically — don't set it yourself unless Voroa requires it explicitly)
-- **Health check path**: `/health` → `{"status": "ok", "engine_alive": true/false}`
+- **Build Command**: *(empty — Voroa auto-installs `requirements.txt`)*
+- **Start Command**: `gunicorn --chdir simulator app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120`
+- **Environment variables to add in Voroa**: `ANGEL_API_KEY`, `ANGEL_CLIENT_CODE`, `ANGEL_PIN`, `ANGEL_TOTP_SECRET` (Voroa injects `PORT` itself — don't set it yourself)
+- **Health Check Path**: `/health` → `{"status": "ok", "engine_running": true/false}`, always HTTP 200
+- **Python**: 3.11 (see `.python-version`)
 - **No database service needed.**
 
-I don't have specific built-in knowledge of Voroa's exact deployment
-conventions (whether it wants a `Procfile`, a UI-configured start command,
-autodetection, etc.) — check Voroa's own docs for how they want the start
-command specified, and let me know if it needs a particular file format.
+**Why exactly one worker**: the trading engine and all paper-trading state
+live in one process's memory. More than one Gunicorn worker would mean
+more than one independent `TradingEngine`, each with its own broker/prices/
+positions — the dashboard would show inconsistent data depending on which
+worker handled which request. `--workers 1` is required, not a tuning
+choice.
+
+**Startup architecture** (`simulator/app.py`): the Flask `app` object and
+every route are importable and ready the instant the module loads — nothing
+Angel-One-related runs inline during import. The `TradingEngine` (which
+needs the 4 env vars above and talks to Angel One) is constructed and
+started in a background daemon thread kicked off at the bottom of the
+module, guarded by a lock so it starts exactly once regardless of how the
+module is loaded. If Angel One is unreachable, credentials are wrong, or
+the engine throws for any other reason, that thread logs the failure
+(`logs/runtime.log`) and dies quietly — Gunicorn, Flask, and `/health` all
+keep running regardless. This is deliberate: an earlier version constructed
+the engine directly at module import time, which meant Gunicorn's worker
+process would exit before ever binding a port if Angel One's env vars were
+missing — Voroa's health check then had nothing to check, reported as
+"failing its health check... nothing is running for this service now."
 
 **Important caveat carried over from local testing**: this app polls Angel
 One continuously and holds all state in memory. If Voroa's web services
@@ -195,7 +218,7 @@ running (not just responds to requests) before trusting live results.
 
 ## 15. Troubleshooting
 
-- **Dashboard shows no data after deploying**: check `/health` — if `engine_alive: false`, the background thread hasn't completed a poll yet (normal for the first ~10s) or crashed (check server logs).
+- **Dashboard shows no data after deploying**: `/health` always returns 200 regardless of engine state by design (see §13) — check its `engine_running` field instead: `false` means the background engine thread never started (check `logs/runtime.log` for a `Trading engine failed to start` message, almost always missing/wrong Angel One env vars) or hasn't finished its first pass yet (normal for the first ~10s).
 - **No live option-chain data**: the engine only fetches option chains during NSE market hours (9:15–15:30 IST); outside that window it holds the last-fetched snapshot instead of fetching fresh data (see `engine.py`'s market-hours gating).
 - **Zero auto-trades despite the market being open**: check `/api/topbar`'s `safe_to_trade` and `trades_used`/`trades_max` — could be a risk-limit block (see the Violation Log page), or simply that the dual-confirmation entry condition hasn't fired yet (this is by design, not a bug — it's intentionally strict).
 - **Settings (auto-trade symbols, capital, etc.) reset after a restart**: expected — config lives in memory only, not persisted to disk or a database. Re-apply via the Profile page (or `POST /api/profile`) after every restart.

@@ -15,9 +15,7 @@ async function pollSpot() {
       renderSparkline(document.getElementById(`spark-${symbol}`), d.sparkline);
     }
     const updatedEl = document.getElementById("updated-at");
-    if (data.error) {
-      updatedEl.textContent = "engine error: " + data.error;
-    } else if (data.updated_at) {
+    if (data.updated_at) {
       updatedEl.textContent = "updated " + data.updated_at.split("T")[1];
     }
   } catch (e) {

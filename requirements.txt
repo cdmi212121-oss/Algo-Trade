@@ -5,3 +5,4 @@ logzero>=1.7
 websocket-client>=1.7
 python-dotenv>=1.0
 flask>=3.0
+gunicorn>=23.0

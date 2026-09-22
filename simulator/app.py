@@ -5,13 +5,30 @@ Pages: Dashboard, Trade Console (manual paper orders incl. GTT), Active
 Position, Trade History, Violation Log. Profile (risk settings) is reachable
 from the top bar but isn't a main nav tab.
 
+Local dev:
     python app.py
-    -> open http://127.0.0.1:5000 locally, or the platform's assigned URL
-       when deployed (PORT env var is honored; binds to 0.0.0.0)
+    -> http://127.0.0.1:5000 (or PORT if set)
+
+Production (Voroa or any WSGI host):
+    gunicorn --chdir simulator app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
 
 No real orders are ever placed anywhere in this app - AngelOneClient
 (angel_data.py) is used for market data only; there is no order-placement
 code path anywhere in this codebase.
+
+Startup architecture (important for Gunicorn/Voroa):
+The Flask `app` object and every route below are ready the instant this
+module finishes importing, regardless of Angel One. The TradingEngine
+(which needs ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET and
+talks to Angel One) is constructed and started in a background daemon
+thread kicked off at the bottom of this module - never inline in the
+import path. If Angel One is unreachable, credentials are wrong, or the
+engine throws for any other reason, that thread logs the failure and dies;
+Flask, every other route, and /health all keep working regardless. This
+matters specifically because Gunicorn imports this module as `app:app` -
+it never runs the `if __name__ == "__main__":` block, so nothing engine-
+related can be gated behind that block, and nothing that can fail must
+run directly in module-level code outside a try/except.
 """
 
 from __future__ import annotations
@@ -20,7 +37,7 @@ import csv
 import glob
 import logging
 import os
-import sys
+import threading
 from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
@@ -28,27 +45,63 @@ from flask import Flask, jsonify, render_template, request
 from candles import build_candles
 from engine import INDEX_SYMBOLS, TRADABLE_SYMBOLS, TradingEngine
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("app")
+
+print("Starting Algo-Trade Flask application...")
+
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # never let browsers cache stale JS/CSS during active development
 
-try:
-    engine = TradingEngine()
-except Exception:
-    # Fail loudly and clearly in the platform's runtime logs (e.g. Voroa)
-    # rather than an unadorned traceback - this only happens for a missing/
-    # invalid env var (see angel_data.py's _require_env), never a partial
-    # or slow Angel One login (that happens lazily, in the background
-    # thread, well after this point).
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("app").critical(
-        "Failed to initialize the trading engine at startup - check that "
-        "ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PIN, and ANGEL_TOTP_SECRET "
-        "are all set correctly.", exc_info=True,
-    )
-    sys.exit(1)
-
 TRADE_LOG_DIR = "logs"
 PRICE_HISTORY_DIR = "price_history"
+
+# engine starts as None and stays None if the background startup thread
+# never succeeds (e.g. bad/missing Angel One credentials) - every route
+# below except /health reads through this, and will 500 on a real request
+# if the engine never came up. /health never touches it.
+engine: TradingEngine | None = None
+_engine_start_lock = threading.Lock()
+_engine_started = False
+
+
+def _start_engine_once() -> None:
+    """Build and start the TradingEngine exactly once, in a background
+    daemon thread. Safe to call more than once (e.g. if a request handler
+    ever wanted to trigger it) - only the first call does anything, and the
+    lock keeps that decision atomic. Runs fully off the import path, so a
+    slow or failing Angel One connection can never delay or crash Flask's
+    own startup."""
+    global _engine_started
+    with _engine_start_lock:
+        if _engine_started:
+            return
+        _engine_started = True
+
+    def _run() -> None:
+        global engine
+        log.info("Trading engine startup initiated.")
+        try:
+            new_engine = TradingEngine()
+            new_engine.start()
+            engine = new_engine
+            log.info("Trading engine started successfully.")
+        except Exception:
+            log.critical(
+                "Trading engine failed to start (commonly: missing/invalid "
+                "ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET, "
+                "or Angel One being unreachable). Flask keeps running "
+                "regardless - only the dashboard/API routes are affected, "
+                "not /health.",
+                exc_info=True,
+            )
+
+    threading.Thread(target=_run, daemon=True, name="engine-startup").start()
+
+
+_start_engine_once()
+
+print("Web server is ready.")
 
 
 # ---- pages -----------------------------------------------------------------
@@ -107,7 +160,10 @@ def api_spot():
             for symbol in INDEX_SYMBOLS
         }
         payload["updated_at"] = engine.last_updated
-        payload["error"] = engine.last_error
+        # engine.last_error deliberately not exposed here - transient network
+        # errors (timeouts etc.) are retried automatically every poll and
+        # aren't actionable from the dashboard; they're still in
+        # logs/runtime.log for debugging.
     return jsonify(payload)
 
 
@@ -263,18 +319,21 @@ def api_profile():
 
 @app.route("/health")
 def api_health():
-    """Liveness check for Voroa (or any host) - deliberately doesn't expose
-    positions/P&L/credentials, just confirms the process and engine thread
-    are alive."""
-    with engine.lock:
-        engine_alive = engine.last_updated is not None
-    return jsonify({"status": "ok", "engine_alive": engine_alive})
+    """Liveness check for Voroa (or any host). Deliberately independent of
+    TradingEngine/AngelOneClient/Angel One login/TOTP/market data/strategy
+    execution - must return 200 even if all of those are broken, unstarted,
+    or mid-crash, so a data-feed problem never takes down the whole
+    deployment. engine_running is informational only (a plain None-check,
+    no lock, can't throw) - it never affects the status code."""
+    return jsonify({"status": "ok", "engine_running": engine is not None})
 
 
 if __name__ == "__main__":
-    engine.start()
     # 0.0.0.0 (not 127.0.0.1) so the container accepts connections from
     # outside itself; PORT comes from the platform when deployed (falls
-    # back to 5000 for local runs where nothing sets it).
+    # back to 5000 for local runs where nothing sets it). Gunicorn in
+    # production never executes this block at all - it binds via its own
+    # --bind 0.0.0.0:$PORT flag instead; the engine startup thread above
+    # already runs unconditionally at import time either way.
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
