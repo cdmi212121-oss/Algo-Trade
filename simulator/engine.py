@@ -33,11 +33,26 @@ from paper_broker import ExitReason, OrderType, PaperBroker, Side
 from risk_manager import RiskManager
 from strategy_engine import StrategyEngine, candle_interval
 
-os.makedirs("logs", exist_ok=True)
+# This runs at module IMPORT time - before app.py even defines the Flask
+# app object, let alone reaches any of its own try/except protection. If
+# the runtime filesystem won't allow creating "logs/" or opening a file in
+# it (read-only container filesystem, permissions, anything), an unguarded
+# exception here would crash the whole `from engine import ...` in app.py,
+# which crashes Gunicorn's worker boot before it can bind a port - the
+# exact "nothing running, health check fails" failure mode. Never let
+# logging setup itself be a reason the app can't start: fall back to
+# console-only logging if file logging isn't available.
+_handlers = [logging.StreamHandler()]
+try:
+    os.makedirs("logs", exist_ok=True)
+    _handlers.append(logging.FileHandler("logs/runtime.log"))
+except Exception:
+    print("WARNING: could not set up logs/runtime.log (read-only filesystem?) - logging to console only.")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("logs/runtime.log")],
+    handlers=_handlers,
 )
 log = logging.getLogger("engine")
 
