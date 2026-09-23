@@ -101,18 +101,26 @@ def _start_engine_once() -> None:
             # hosts' filesystems that can hang indefinitely instead of
             # failing fast. Run it with a hard timeout so a hang there can
             # never leave the engine stuck forever with no explanation.
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(TradingEngine)
-                try:
-                    new_engine = future.result(timeout=25)
-                except concurrent.futures.TimeoutError:
-                    raise RuntimeError(
-                        "TradingEngine() construction did not finish within 25s "
-                        "- most likely SmartApi's own SmartConnect() hanging on "
-                        "a filesystem write (logs/<date>/app.log) during "
-                        "__init__, on this host's filesystem. Not our own code "
-                        "hanging - see angel_data.py/SmartApi's smartConnect.py."
-                    )
+            #
+            # Deliberately NOT using "with ThreadPoolExecutor(...) as pool:"
+            # here - exiting that block calls pool.shutdown(wait=True), which
+            # blocks until the stuck submitted call finishes, silently
+            # defeating the whole timeout. Leaving the pool (and its one
+            # stuck worker thread, if it never returns) to be garbage
+            # collected is the correct trade-off here - it's a one-time
+            # startup attempt, not a per-request cost.
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(TradingEngine)
+            try:
+                new_engine = future.result(timeout=25)
+            except concurrent.futures.TimeoutError:
+                raise RuntimeError(
+                    "TradingEngine() construction did not finish within 25s "
+                    "- most likely SmartApi's own SmartConnect() hanging on "
+                    "a filesystem write (logs/<date>/app.log) during "
+                    "__init__, on this host's filesystem. Not our own code "
+                    "hanging - see angel_data.py/SmartApi's smartConnect.py."
+                )
             _set_checkpoint("calling_start")
             new_engine.start()
             _set_checkpoint("done")
