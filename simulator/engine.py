@@ -12,6 +12,7 @@ positions, and P&L that every dashboard page reads from.
 
 from __future__ import annotations
 
+import csv
 import logging
 import os
 import threading
@@ -106,15 +107,36 @@ class TradingEngine:
             pass
 
     def _log_event(self, trade_id: str, event_type: str, message: str) -> None:
+        now_iso = datetime.now().isoformat(timespec="seconds")
         with self.lock:
             self.order_events.append({
                 "id": self._next_event_id,
-                "time": datetime.now().isoformat(timespec="seconds"),
+                "time": now_iso,
                 "trade_id": trade_id,
                 "type": event_type,  # PLACED, FILLED, REJECTED, CANCELLED, EXITED
                 "message": message,
             })
             self._next_event_id += 1
+        self._append_event_log(now_iso, trade_id, event_type, message)
+
+    def _append_event_log(self, ts: str, trade_id: str, event_type: str, message: str) -> None:
+        """Permanent record of every PLACED/FILLED/REJECTED/CANCELLED/EXITED
+        event, on disk - unlike self.order_events (in-memory, capped at 100,
+        wiped on every restart), this is the one place a position that got
+        opened and then lost to a restart (before it could close and reach
+        logs/trades_<date>.csv) still leaves a trace. Never let a logging
+        failure here break the actual trading logic that called this."""
+        try:
+            day = datetime.now().strftime("%Y-%m-%d")
+            path = os.path.join("logs", f"events_{day}.csv")
+            is_new = not os.path.exists(path)
+            with open(path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if is_new:
+                    writer.writerow(["time", "trade_id", "type", "message"])
+                writer.writerow([ts, trade_id, event_type, message])
+        except Exception:
+            log.exception("Failed to append to events log (non-fatal)")
 
     # ---- background loop -------------------------------------------------
 
@@ -325,7 +347,6 @@ class TradingEngine:
                 self._alert_position_created()
 
     def _append_price_history(self, ts: datetime, spot: dict[str, dict]) -> None:
-        import csv
         day = ts.strftime("%Y-%m-%d")
         os.makedirs(PRICE_HISTORY_DIR, exist_ok=True)
         for symbol, data in spot.items():
