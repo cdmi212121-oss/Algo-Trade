@@ -33,6 +33,7 @@ run directly in module-level code outside a try/except.
 
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import glob
 import logging
@@ -91,23 +92,27 @@ def _start_engine_once() -> None:
         _set_checkpoint("thread_started")
         log.info("Trading engine startup initiated.")
         try:
-            _set_checkpoint("constructing_config")
-            from config import TradingConfig
-            cfg = TradingConfig()
-            _set_checkpoint("constructing_angel_client")
-            from angel_data import AngelOneClient
-            client = AngelOneClient()
-            _set_checkpoint("constructing_paper_broker")
-            from paper_broker import PaperBroker
-            broker = PaperBroker(starting_capital=cfg.starting_capital)
-            _set_checkpoint("constructing_risk_manager")
-            from risk_manager import RiskManager
-            risk = RiskManager(cfg)
-            _set_checkpoint("constructing_strategy_engine")
-            from strategy_engine import StrategyEngine
-            strategy = StrategyEngine()
             _set_checkpoint("constructing_trading_engine")
-            new_engine = TradingEngine()
+            # TradingEngine() constructs AngelOneClient() internally, which
+            # constructs SmartApi's SmartConnect() - that third-party class
+            # does its OWN unguarded filesystem write during __init__
+            # (creates logs/<date>/app.log via logzero.logfile()), completely
+            # outside our control since it's installed, not our code. On some
+            # hosts' filesystems that can hang indefinitely instead of
+            # failing fast. Run it with a hard timeout so a hang there can
+            # never leave the engine stuck forever with no explanation.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(TradingEngine)
+                try:
+                    new_engine = future.result(timeout=25)
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError(
+                        "TradingEngine() construction did not finish within 25s "
+                        "- most likely SmartApi's own SmartConnect() hanging on "
+                        "a filesystem write (logs/<date>/app.log) during "
+                        "__init__, on this host's filesystem. Not our own code "
+                        "hanging - see angel_data.py/SmartApi's smartConnect.py."
+                    )
             _set_checkpoint("calling_start")
             new_engine.start()
             _set_checkpoint("done")
@@ -118,9 +123,10 @@ def _start_engine_once() -> None:
             log.critical(
                 "Trading engine failed to start (commonly: missing/invalid "
                 "ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET, "
-                "or Angel One being unreachable). Flask keeps running "
-                "regardless - only the dashboard/API routes are affected, "
-                "not /health.",
+                "or Angel One being unreachable, or a hang inside SmartApi's "
+                "own filesystem write during SmartConnect() init). Flask "
+                "keeps running regardless - only the dashboard/API routes "
+                "are affected, not /health.",
                 exc_info=True,
             )
 
