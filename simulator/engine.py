@@ -73,11 +73,17 @@ DATA_POLL_END = dtime(15, 30)
 
 class TradingEngine:
     def __init__(self):
+        print("CHECKPOINT: TradingEngine.__init__ start", flush=True)
         self.config = TradingConfig()
+        print("CHECKPOINT: TradingConfig() done, constructing AngelOneClient", flush=True)
         self.client = AngelOneClient()
+        print("CHECKPOINT: AngelOneClient() done, constructing PaperBroker", flush=True)
         self.broker = PaperBroker(starting_capital=self.config.starting_capital)
+        print("CHECKPOINT: PaperBroker() done, constructing RiskManager", flush=True)
         self.risk = RiskManager(self.config)
+        print("CHECKPOINT: RiskManager() done, constructing StrategyEngine", flush=True)
         self.strategy = StrategyEngine()
+        print("CHECKPOINT: StrategyEngine() done, TradingEngine.__init__ finishing", flush=True)
 
         self.lock = threading.RLock()
         self.ltp_map: dict[str, float] = {}

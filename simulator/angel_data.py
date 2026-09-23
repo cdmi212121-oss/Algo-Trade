@@ -68,14 +68,21 @@ def _require_env(name: str) -> str:
 
 class AngelOneClient:
     def __init__(self):
+        print("CHECKPOINT: AngelOneClient.__init__ start", flush=True)
         self.api_key = _require_env("ANGEL_API_KEY")
+        print("CHECKPOINT: got ANGEL_API_KEY", flush=True)
         self.client_code = _require_env("ANGEL_CLIENT_CODE")
+        print("CHECKPOINT: got ANGEL_CLIENT_CODE", flush=True)
         self.pin = _require_env("ANGEL_PIN")
+        print("CHECKPOINT: got ANGEL_PIN", flush=True)
         self.totp_secret = _require_env("ANGEL_TOTP_SECRET")
+        print("CHECKPOINT: got ANGEL_TOTP_SECRET, calling SmartConnect()", flush=True)
 
         self.connect = SmartConnect(api_key=self.api_key)
+        print("CHECKPOINT: SmartConnect() returned", flush=True)
         self._session = None
         self._instruments: Optional[list[dict]] = None
+        print("CHECKPOINT: AngelOneClient.__init__ done", flush=True)
 
     def login(self) -> None:
         totp_code = pyotp.TOTP(self.totp_secret).now()
