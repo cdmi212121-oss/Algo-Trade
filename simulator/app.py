@@ -62,8 +62,15 @@ PRICE_HISTORY_DIR = "price_history"
 # if the engine never came up. /health never touches it.
 engine: TradingEngine | None = None
 engine_error: str | None = None  # str(exception) if startup failed - surfaced on /health for easy remote diagnosis
+engine_checkpoint: str = "not_started"  # last reached step - pinpoints a HANG (no exception, no success) on /health
 _engine_start_lock = threading.Lock()
 _engine_started = False
+
+
+def _set_checkpoint(name: str) -> None:
+    global engine_checkpoint
+    engine_checkpoint = name
+    log.info("Engine startup checkpoint: %s", name)
 
 
 def _start_engine_once() -> None:
@@ -81,10 +88,29 @@ def _start_engine_once() -> None:
 
     def _run() -> None:
         global engine, engine_error
+        _set_checkpoint("thread_started")
         log.info("Trading engine startup initiated.")
         try:
+            _set_checkpoint("constructing_config")
+            from config import TradingConfig
+            cfg = TradingConfig()
+            _set_checkpoint("constructing_angel_client")
+            from angel_data import AngelOneClient
+            client = AngelOneClient()
+            _set_checkpoint("constructing_paper_broker")
+            from paper_broker import PaperBroker
+            broker = PaperBroker(starting_capital=cfg.starting_capital)
+            _set_checkpoint("constructing_risk_manager")
+            from risk_manager import RiskManager
+            risk = RiskManager(cfg)
+            _set_checkpoint("constructing_strategy_engine")
+            from strategy_engine import StrategyEngine
+            strategy = StrategyEngine()
+            _set_checkpoint("constructing_trading_engine")
             new_engine = TradingEngine()
+            _set_checkpoint("calling_start")
             new_engine.start()
+            _set_checkpoint("done")
             engine = new_engine
             log.info("Trading engine started successfully.")
         except Exception as exc:
@@ -333,6 +359,7 @@ def api_health():
         "status": "ok",
         "engine_running": engine is not None,
         "engine_error": engine_error,
+        "engine_checkpoint": engine_checkpoint,
     })
 
 
