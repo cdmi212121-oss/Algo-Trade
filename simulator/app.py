@@ -61,6 +61,7 @@ PRICE_HISTORY_DIR = "price_history"
 # below except /health reads through this, and will 500 on a real request
 # if the engine never came up. /health never touches it.
 engine: TradingEngine | None = None
+engine_error: str | None = None  # str(exception) if startup failed - surfaced on /health for easy remote diagnosis
 _engine_start_lock = threading.Lock()
 _engine_started = False
 
@@ -79,14 +80,15 @@ def _start_engine_once() -> None:
         _engine_started = True
 
     def _run() -> None:
-        global engine
+        global engine, engine_error
         log.info("Trading engine startup initiated.")
         try:
             new_engine = TradingEngine()
             new_engine.start()
             engine = new_engine
             log.info("Trading engine started successfully.")
-        except Exception:
+        except Exception as exc:
+            engine_error = f"{type(exc).__name__}: {exc}"
             log.critical(
                 "Trading engine failed to start (commonly: missing/invalid "
                 "ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET, "
@@ -323,9 +325,15 @@ def api_health():
     TradingEngine/AngelOneClient/Angel One login/TOTP/market data/strategy
     execution - must return 200 even if all of those are broken, unstarted,
     or mid-crash, so a data-feed problem never takes down the whole
-    deployment. engine_running is informational only (a plain None-check,
-    no lock, can't throw) - it never affects the status code."""
-    return jsonify({"status": "ok", "engine_running": engine is not None})
+    deployment. engine_running/engine_error are informational only (plain
+    variable reads, no lock, can't throw) - they never affect the status
+    code. engine_error is just str(exception) - never a full traceback,
+    never anything from the request itself - so it's safe to expose here."""
+    return jsonify({
+        "status": "ok",
+        "engine_running": engine is not None,
+        "engine_error": engine_error,
+    })
 
 
 if __name__ == "__main__":
