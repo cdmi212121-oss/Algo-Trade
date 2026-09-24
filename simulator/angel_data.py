@@ -94,7 +94,28 @@ class AngelOneClient:
         self.totp_secret = _require_env("ANGEL_TOTP_SECRET")
         print("CHECKPOINT: got ANGEL_TOTP_SECRET, calling SmartConnect()", flush=True)
 
-        self.connect = SmartConnect(api_key=self.api_key)
+        # SmartConnect.__init__ also unconditionally does
+        # os.makedirs(f"logs/{today}", exist_ok=True) BEFORE calling
+        # logzero.logfile() (which we've already neutralized above) - that
+        # makedirs call is a second, separate candidate for the same kind
+        # of intermittent hang on Render's filesystem. Pre-create the
+        # directory ourselves with the real os.makedirs first (so it's a
+        # cheap no-op either way), then temporarily patch os.makedirs to a
+        # genuine no-op for the duration of this one call, restoring the
+        # real function immediately afterward - this is scoped narrowly so
+        # it can't mask a real missing-directory bug anywhere else in the
+        # app.
+        today_str = time.strftime("%Y-%m-%d", time.localtime())
+        try:
+            os.makedirs(os.path.join("logs", today_str), exist_ok=True)
+        except Exception:
+            pass  # non-fatal - the no-op patch below covers this call regardless
+        _real_makedirs = os.makedirs
+        os.makedirs = lambda *args, **kwargs: None
+        try:
+            self.connect = SmartConnect(api_key=self.api_key)
+        finally:
+            os.makedirs = _real_makedirs
         print("CHECKPOINT: SmartConnect() returned", flush=True)
         self._session = None
         self._instruments: Optional[list[dict]] = None
