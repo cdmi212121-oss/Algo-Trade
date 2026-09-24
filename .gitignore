@@ -30,6 +30,10 @@ Topic *.txt
 Algo Strategy/
 Render/
 transcripts/
+
+# Local curated copy of just the source files - not tracked separately,
+# would duplicate the whole repo inside itself
+Important file/
 *.mp4
 Algo_Explanation_Gujarati.pdf
 
