@@ -26,10 +26,26 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Optional
 
+import logzero
 import pyotp
 import requests
 from dotenv import load_dotenv
-from SmartApi.smartConnect import SmartConnect
+
+# Neutralize SmartApi's own SmartConnect.__init__ unguarded filesystem
+# write, BEFORE importing SmartConnect - its __init__ unconditionally calls
+# logzero.logfile(...) to set up a date-wise log file under
+# logs/<date>/app.log, with no constructor parameter to opt out. On
+# Render's free tier this has been observed to intermittently hang
+# indefinitely instead of failing fast, leaving the whole engine stuck
+# with no error and no way for our own timeout wrapper to interrupt it
+# (a genuine hang here doesn't yield the GIL the way normal blocking I/O
+# does). Patching it to a no-op removes the risky call entirely, rather
+# than trying to work around a hang after the fact. This is our own code
+# doing the patch, not a change to the installed package (which gets
+# reinstalled fresh on every deploy anyway).
+logzero.logfile = lambda *args, **kwargs: None
+
+from SmartApi.smartConnect import SmartConnect  # noqa: E402 - must import after the patch above
 
 from market_data import OptionChainSnapshot, OptionQuote
 
