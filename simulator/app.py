@@ -39,6 +39,7 @@ import glob
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
@@ -65,8 +66,13 @@ PRICE_HISTORY_DIR = "price_history"
 engine: TradingEngine | None = None
 engine_error: str | None = None  # str(exception) if startup failed - surfaced on /health for easy remote diagnosis
 engine_checkpoint: str = "not_started"  # last reached step - pinpoints a HANG (no exception, no success) on /health
+engine_startup_attempt: int = 0  # which retry we're on - surfaced on /health
 _engine_start_lock = threading.Lock()
 _engine_started = False
+
+ENGINE_STARTUP_TIMEOUT_S = 45  # Render free tier is heavily CPU-throttled; 25s was cutting it close
+ENGINE_STARTUP_MAX_ATTEMPTS = 6
+ENGINE_STARTUP_RETRY_DELAY_S = 5
 
 
 def _set_checkpoint(name: str) -> None:
@@ -105,55 +111,71 @@ def _start_engine_once() -> None:
         _engine_started = True
 
     def _run() -> None:
-        global engine, engine_error
+        global engine, engine_error, engine_startup_attempt
         _set_checkpoint("thread_started")
         log.info("Trading engine startup initiated.")
-        try:
-            _set_checkpoint("constructing_trading_engine")
-            # TradingEngine() constructs AngelOneClient() internally, which
-            # constructs SmartApi's SmartConnect() - that third-party class
-            # does its OWN unguarded filesystem write during __init__
-            # (creates logs/<date>/app.log via logzero.logfile()), completely
-            # outside our control since it's installed, not our code. On some
-            # hosts' filesystems that can hang indefinitely instead of
-            # failing fast. Run it with a hard timeout so a hang there can
-            # never leave the engine stuck forever with no explanation.
-            #
-            # Deliberately NOT using "with ThreadPoolExecutor(...) as pool:"
-            # here - exiting that block calls pool.shutdown(wait=True), which
-            # blocks until the stuck submitted call finishes, silently
-            # defeating the whole timeout. Leaving the pool (and its one
-            # stuck worker thread, if it never returns) to be garbage
-            # collected is the correct trade-off here - it's a one-time
-            # startup attempt, not a per-request cost.
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            future = pool.submit(TradingEngine)
+
+        for attempt in range(1, ENGINE_STARTUP_MAX_ATTEMPTS + 1):
+            engine_startup_attempt = attempt
             try:
-                new_engine = future.result(timeout=25)
-            except concurrent.futures.TimeoutError:
-                raise RuntimeError(
-                    "TradingEngine() construction did not finish within 25s "
-                    "- most likely SmartApi's own SmartConnect() hanging on "
-                    "a filesystem write (logs/<date>/app.log) during "
-                    "__init__, on this host's filesystem. Not our own code "
-                    "hanging - see angel_data.py/SmartApi's smartConnect.py."
+                _set_checkpoint(f"constructing_trading_engine (attempt {attempt})")
+                # TradingEngine() constructs AngelOneClient() internally, which
+                # constructs SmartApi's SmartConnect() - a third-party class
+                # whose __init__ we've already neutralized the two known
+                # unguarded filesystem writes in (angel_data.py). On Render's
+                # heavily CPU-throttled free tier, construction can still be
+                # very slow (not necessarily hung) - especially right after a
+                # cold container boot. Run each attempt with a hard timeout,
+                # and RETRY on timeout with a fresh thread/fresh SmartConnect
+                # object rather than giving up forever after one slow attempt
+                # - each attempt is fully independent (no shared state with a
+                # previous slow/stuck one), so a bad attempt doesn't poison
+                # the next one.
+                #
+                # Deliberately NOT using "with ThreadPoolExecutor(...) as pool:"
+                # here - exiting that block calls pool.shutdown(wait=True), which
+                # blocks until the stuck submitted call finishes, silently
+                # defeating the whole timeout. Leaving the pool (and its one
+                # stuck worker thread, if it never returns) to be garbage
+                # collected is the correct trade-off here.
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = pool.submit(TradingEngine)
+                try:
+                    new_engine = future.result(timeout=ENGINE_STARTUP_TIMEOUT_S)
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError(
+                        f"TradingEngine() construction did not finish within "
+                        f"{ENGINE_STARTUP_TIMEOUT_S}s (attempt {attempt}/"
+                        f"{ENGINE_STARTUP_MAX_ATTEMPTS})."
+                    )
+                _set_checkpoint("calling_start")
+                new_engine.start()
+                _set_checkpoint("done")
+                engine = new_engine
+                engine_error = None
+                log.info("Trading engine started successfully on attempt %d.", attempt)
+                return
+            except Exception as exc:
+                engine_error = f"{type(exc).__name__}: {exc}"
+                log.critical(
+                    "Trading engine startup attempt %d/%d failed (commonly: "
+                    "missing/invalid ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/"
+                    "ANGEL_TOTP_SECRET, or Angel One being unreachable, or slow "
+                    "SmartConnect() construction on a throttled host). Flask "
+                    "keeps running regardless - only the dashboard/API routes "
+                    "are affected, not /health.",
+                    attempt, ENGINE_STARTUP_MAX_ATTEMPTS, exc_info=True,
                 )
-            _set_checkpoint("calling_start")
-            new_engine.start()
-            _set_checkpoint("done")
-            engine = new_engine
-            log.info("Trading engine started successfully.")
-        except Exception as exc:
-            engine_error = f"{type(exc).__name__}: {exc}"
-            log.critical(
-                "Trading engine failed to start (commonly: missing/invalid "
-                "ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET, "
-                "or Angel One being unreachable, or a hang inside SmartApi's "
-                "own filesystem write during SmartConnect() init). Flask "
-                "keeps running regardless - only the dashboard/API routes "
-                "are affected, not /health.",
-                exc_info=True,
-            )
+                if attempt < ENGINE_STARTUP_MAX_ATTEMPTS:
+                    _set_checkpoint(f"retrying_after_failure (attempt {attempt})")
+                    time.sleep(ENGINE_STARTUP_RETRY_DELAY_S)
+
+        _set_checkpoint("gave_up")
+        log.critical(
+            "Trading engine failed to start after %d attempts - giving up. "
+            "A redeploy or manual restart is needed to try again.",
+            ENGINE_STARTUP_MAX_ATTEMPTS,
+        )
 
     threading.Thread(target=_run, daemon=True, name="engine-startup").start()
 
@@ -415,6 +437,8 @@ def api_health():
         "engine_running": engine is not None,
         "engine_error": engine_error,
         "engine_checkpoint": engine_checkpoint,
+        "engine_startup_attempt": engine_startup_attempt,
+        "engine_startup_max_attempts": ENGINE_STARTUP_MAX_ATTEMPTS,
     })
 
 
