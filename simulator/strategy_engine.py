@@ -55,6 +55,7 @@ from datetime import date, datetime, time
 from typing import Optional
 
 from candles import build_candles, candles_from_ticks
+from ist_clock import now_ist, today_ist
 from market_data import OptionChainSnapshot, instrument_key
 from paper_broker import Side
 from strike_selection import is_expiry_day, select_strike
@@ -185,7 +186,7 @@ class StrategyEngine:
         today's 4 checkpoints (§2), reading the 15-min chart's current
         swing-leg direction. Resets at day-rollover so yesterday's bias
         never leaks into today."""
-        today = date.today()
+        today = today_ist()
         if self._bias_day != today:
             self._bias_day = today
             self._directional_bias = {}
@@ -213,7 +214,7 @@ class StrategyEngine:
 
     def _watch_premium(self, symbol: str, option_type: str, quote, now: datetime, interval: int) -> SwingTracker:
         tick_key = (symbol, option_type)
-        day = date.today().isoformat()
+        day = today_ist().isoformat()
         ticks = self._premium_ticks.get(tick_key)
         if ticks is None:
             # Cold start for this instrument today (fresh process, or first
@@ -233,7 +234,7 @@ class StrategyEngine:
 
     def on_tick(self, snapshot: OptionChainSnapshot) -> list[Signal]:
         symbol = snapshot.symbol
-        now_dt = datetime.now()
+        now_dt = now_ist()
         now = now_dt.time()
         interval = candle_interval(now)  # 1-min before 10:30, 3-min after - §2, literal
         expiry_today = is_expiry_day(snapshot)
@@ -244,7 +245,7 @@ class StrategyEngine:
 
         self._maybe_update_bias(symbol, now)
 
-        underlying_candles = build_candles(symbol, date.today().isoformat(), interval)
+        underlying_candles = build_candles(symbol, today_ist().isoformat(), interval)
         if len(underlying_candles) < 4:
             return []  # not enough history yet to have confirmed any swing today
 
@@ -274,7 +275,7 @@ class StrategyEngine:
             expiry_date = datetime.strptime(snapshot.nearest_expiry(), "%d%b%Y").date()
         except ValueError:
             pass
-        days_to_expiry = (expiry_date - date.today()).days if expiry_date else 7
+        days_to_expiry = (expiry_date - today_ist()).days if expiry_date else 7
 
         sl_points, target_points = _sl_target_points(symbol, days_to_expiry)
         opposite_swing = premium_tracker.last_swing_low if option_type == "CE" else premium_tracker.last_swing_high

@@ -29,6 +29,7 @@ except ImportError:
 from angel_data import AngelOneClient
 from candles import candles_from_ticks
 from config import TradingConfig
+from ist_clock import now_ist
 from market_data import OptionChainSnapshot, instrument_key
 from paper_broker import ExitReason, OrderType, PaperBroker, Side
 from risk_manager import RiskManager
@@ -113,7 +114,7 @@ class TradingEngine:
             pass
 
     def _log_event(self, trade_id: str, event_type: str, message: str) -> None:
-        now_iso = datetime.now().isoformat(timespec="seconds")
+        now_iso = now_ist().isoformat(timespec="seconds")
         with self.lock:
             self.order_events.append({
                 "id": self._next_event_id,
@@ -133,7 +134,7 @@ class TradingEngine:
         logs/trades_<date>.csv) still leaves a trace. Never let a logging
         failure here break the actual trading logic that called this."""
         try:
-            day = datetime.now().strftime("%Y-%m-%d")
+            day = now_ist().strftime("%Y-%m-%d")
             path = os.path.join("logs", f"events_{day}.csv")
             is_new = not os.path.exists(path)
             with open(path, "a", newline="") as f:
@@ -163,7 +164,7 @@ class TradingEngine:
             time.sleep(self.config.poll_interval_seconds)
 
     def _tick(self) -> None:
-        now_dt = datetime.now()
+        now_dt = now_ist()
         now = now_dt.time()
 
         with self.lock:

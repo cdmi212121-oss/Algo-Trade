@@ -47,6 +47,7 @@ logzero.logfile = lambda *args, **kwargs: None
 
 from SmartApi.smartConnect import SmartConnect  # noqa: E402 - must import after the patch above
 
+from ist_clock import now_ist, today_ist
 from market_data import OptionChainSnapshot, OptionQuote
 
 load_dotenv()  # loads .env from the project root if present; real env vars still take precedence
@@ -153,7 +154,7 @@ class AngelOneClient:
 
     def _nearest_expiry(self, symbol: str) -> str:
         instruments = self._load_instruments()
-        today = date.today()
+        today = today_ist()
         expiries = set()
         for inst in instruments:
             if inst.get("name") == symbol and inst.get("instrumenttype") == "OPTIDX":
@@ -268,7 +269,7 @@ class AngelOneClient:
         return OptionChainSnapshot(
             symbol=symbol,
             underlying_value=spot,
-            timestamp=datetime.now(),
+            timestamp=now_ist(),
             expiries=[expiry],
             quotes=quotes,
             lot_size=lot_size,

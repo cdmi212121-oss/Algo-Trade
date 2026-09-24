@@ -45,6 +45,7 @@ from flask import Flask, jsonify, render_template, request
 
 from candles import build_candles
 from engine import INDEX_SYMBOLS, TRADABLE_SYMBOLS, TradingEngine
+from ist_clock import now_ist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("app")
@@ -212,7 +213,7 @@ def api_spot():
 @app.route("/api/candles/<symbol>")
 def api_candles(symbol: str):
     symbol = symbol.upper()
-    day = request.args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    day = request.args.get("date") or now_ist().strftime("%Y-%m-%d")
     interval = int(request.args.get("interval", 1))
     return jsonify(build_candles(symbol, day, interval))
 

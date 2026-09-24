@@ -10,9 +10,10 @@ big* the position should be.
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import time
 
 from config import TradingConfig
+from ist_clock import now_ist, today_ist
 
 
 class RiskManager:
@@ -20,11 +21,11 @@ class RiskManager:
         self.config = config
         self.trades_today = 0
         self.day_start_equity = config.starting_capital
-        self._current_date = datetime.now().date()
+        self._current_date = today_ist()
         self.violation_log: list[dict] = []
 
     def _roll_day_if_needed(self, current_equity: float) -> None:
-        today = datetime.now().date()
+        today = today_ist()
         if today != self._current_date:
             self._current_date = today
             self.trades_today = 0
@@ -36,11 +37,11 @@ class RiskManager:
         return self.day_start_equity * self.config.tradable_capital_pct / 100
 
     def within_trading_hours(self, now: time | None = None) -> bool:
-        now = now or datetime.now().time()
+        now = now or now_ist().time()
         return self.config.market_open <= now <= self.config.no_trade_after
 
     def should_square_off(self, now: time | None = None) -> bool:
-        now = now or datetime.now().time()
+        now = now or now_ist().time()
         return now >= self.config.square_off_time
 
     def can_open_new_trade(self, current_equity: float, open_position_count: int,
@@ -63,7 +64,7 @@ class RiskManager:
 
         if reason is not None:
             self.violation_log.append({
-                "time": datetime.now().isoformat(timespec="seconds"),
+                "time": now_ist().isoformat(timespec="seconds"),
                 "symbol": symbol or "-",
                 "reason": reason,
             })

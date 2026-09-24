@@ -18,6 +18,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
+from ist_clock import now_ist
+
 
 class Side(Enum):
     BUY = "BUY"
@@ -97,7 +99,7 @@ class PendingOrder:
     trigger_price: float
     stop_loss: float
     target: float
-    placed_time: datetime = field(default_factory=datetime.now)
+    placed_time: datetime = field(default_factory=now_ist)
     trade_id: str = field(default_factory=_generate_trade_id)
 
     def should_fill(self, ltp: float) -> bool:
@@ -130,7 +132,7 @@ class PaperBroker:
         self.trade_log: list[TradeRecord] = []
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
-        self._log_path = os.path.join(log_dir, f"trades_{datetime.now():%Y%m%d}.csv")
+        self._log_path = os.path.join(log_dir, f"trades_{now_ist():%Y%m%d}.csv")
         self._ensure_log_header()
 
     def _ensure_log_header(self) -> None:
@@ -159,7 +161,7 @@ class PaperBroker:
             side=side,
             qty=qty,
             entry_price=entry_price,
-            entry_time=datetime.now(),
+            entry_time=now_ist(),
             stop_loss=stop_loss,
             target=target,
             trail_sl_step=trail_sl_step,
@@ -209,7 +211,7 @@ class PaperBroker:
             entry_price=pos.entry_price,
             entry_time=pos.entry_time,
             exit_price=exit_price,
-            exit_time=datetime.now(),
+            exit_time=now_ist(),
             exit_reason=reason,
             pnl=pnl,
             trade_id=pos.trade_id,
@@ -237,7 +239,7 @@ class PaperBroker:
             entry_price=pos.entry_price,
             entry_time=pos.entry_time,
             exit_price=exit_price,
-            exit_time=datetime.now(),
+            exit_time=now_ist(),
             exit_reason=reason,
             pnl=pnl,
             trade_id=pos.trade_id,

@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Optional
 
+from ist_clock import now_ist, today_ist
 from market_data import OptionChainSnapshot, OptionQuote
 
 EXPIRY_ATM_SWITCH_TIME = time(12, 0)
@@ -33,12 +34,12 @@ def _strike_step(snapshot: OptionChainSnapshot) -> float:
 
 
 def is_expiry_day(snapshot: OptionChainSnapshot, today: Optional[date] = None) -> bool:
-    today = today or date.today()
+    today = today or today_ist()
     return _parse_expiry(snapshot.nearest_expiry()) == today
 
 
 def is_day_before_expiry(snapshot: OptionChainSnapshot, today: Optional[date] = None) -> bool:
-    today = today or date.today()
+    today = today or today_ist()
     return (_parse_expiry(snapshot.nearest_expiry()) - today).days == 1
 
 
@@ -53,7 +54,7 @@ def select_strike(
 ) -> Optional[OptionQuote]:
     """option_type: 'CE' or 'PE'. Returns the quote to watch/trade, or None
     if the chain doesn't have a usable candidate right now."""
-    now = now or datetime.now().time()
+    now = now or now_ist().time()
     step = _strike_step(snapshot)
     atm = snapshot.atm_strike()
     expiry_today = is_expiry_day(snapshot)
