@@ -69,10 +69,21 @@ engine_checkpoint: str = "not_started"  # last reached step - pinpoints a HANG (
 engine_startup_attempt: int = 0  # which retry we're on - surfaced on /health
 _engine_start_lock = threading.Lock()
 _engine_started = False
+_engine_start_ts: float = 0.0  # time.time() when startup began - used by /health's stuck-detector
 
 ENGINE_STARTUP_TIMEOUT_S = 45  # Render free tier is heavily CPU-throttled; 25s was cutting it close
 ENGINE_STARTUP_MAX_ATTEMPTS = 6
 ENGINE_STARTUP_RETRY_DELAY_S = 5
+# Worst case for a legitimate (non-hung) startup: 6 attempts * 45s + 5 retry
+# delays * 5s = ~295s. A real hang has been observed to defeat even the
+# per-attempt timeout entirely (the watcher thread itself never gets
+# scheduled - see the "constructing_trading_engine (attempt 1)" stuck-for-
+# 140s+ incident), so retries alone can't recover from it. Past this
+# threshold, /health deliberately starts returning 503 instead of its usual
+# always-200, so Render's own platform-level health-check auto-restart (the
+# thing that already reliably clears this when done manually) kicks in
+# without needing anyone to click "Restart service".
+ENGINE_STUCK_HEALTH_THRESHOLD_S = 420
 
 
 def _set_checkpoint(name: str) -> None:
@@ -104,11 +115,12 @@ def _start_engine_once() -> None:
     lock keeps that decision atomic. Runs fully off the import path, so a
     slow or failing Angel One connection can never delay or crash Flask's
     own startup."""
-    global _engine_started
+    global _engine_started, _engine_start_ts
     with _engine_start_lock:
         if _engine_started:
             return
         _engine_started = True
+        _engine_start_ts = time.time()
 
     def _run() -> None:
         global engine, engine_error, engine_startup_attempt
@@ -424,22 +436,41 @@ def api_profile():
 
 @app.route("/health")
 def api_health():
-    """Liveness check for Voroa (or any host). Deliberately independent of
+    """Liveness check for Render (or any host). Independent of
     TradingEngine/AngelOneClient/Angel One login/TOTP/market data/strategy
-    execution - must return 200 even if all of those are broken, unstarted,
-    or mid-crash, so a data-feed problem never takes down the whole
-    deployment. engine_running/engine_error are informational only (plain
-    variable reads, no lock, can't throw) - they never affect the status
-    code. engine_error is just str(exception) - never a full traceback,
-    never anything from the request itself - so it's safe to expose here."""
-    return jsonify({
-        "status": "ok",
+    execution for as long as startup is still plausibly in progress - must
+    return 200 even if all of those are broken, unstarted, or mid-crash, so
+    a data-feed problem never takes down the whole deployment during a
+    normal (if slow) boot. engine_running/engine_error/etc are informational
+    only (plain variable reads, no lock, can't throw).
+
+    The one exception: if startup has been stuck (no success, no final
+    failure) for far longer than any legitimate attempt+retry sequence could
+    take, this deliberately flips to 503. A hang inside SmartConnect() has
+    been observed to defeat our own in-process timeout entirely (the
+    watcher thread never gets scheduled), so retries alone can't recover -
+    only a full process restart does (confirmed: manually restarting the
+    Render service always clears it). Returning 503 here lets Render's own
+    platform-level health-check auto-restart do that automatically instead
+    of needing a manual click every time."""
+    stuck = (
+        engine is None
+        and engine_checkpoint != "gave_up"  # that case fails immediately below anyway
+        and _engine_start_ts > 0
+        and (time.time() - _engine_start_ts) > ENGINE_STUCK_HEALTH_THRESHOLD_S
+    )
+    gave_up = engine is None and engine_checkpoint == "gave_up"
+    payload = {
+        "status": "stuck" if (stuck or gave_up) else "ok",
         "engine_running": engine is not None,
         "engine_error": engine_error,
         "engine_checkpoint": engine_checkpoint,
         "engine_startup_attempt": engine_startup_attempt,
         "engine_startup_max_attempts": ENGINE_STARTUP_MAX_ATTEMPTS,
-    })
+    }
+    if stuck or gave_up:
+        return jsonify(payload), 503
+    return jsonify(payload)
 
 
 if __name__ == "__main__":
