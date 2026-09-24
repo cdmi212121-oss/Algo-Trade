@@ -75,6 +75,22 @@ def _set_checkpoint(name: str) -> None:
     log.info("Engine startup checkpoint: %s", name)
 
 
+def _engine_ready():
+    """Every /api/* route below reads `engine` directly. On a cold Render
+    start (or any startup delay) it's still None for a real window - without
+    this guard that's a raw AttributeError -> Flask's default HTML 500 page,
+    which breaks res.json() on the frontend and leaves pages like Profile
+    permanently blank (nothing there retries a failed initial load). Returns
+    a clean JSON 503 the frontend can retry against, or None when ready."""
+    if engine is None:
+        return jsonify({
+            "error": "Trading engine is still starting up - please retry shortly.",
+            "engine_checkpoint": engine_checkpoint,
+            "engine_error": engine_error,
+        }), 503
+    return None
+
+
 def _start_engine_once() -> None:
     """Build and start the TradingEngine exactly once, in a background
     daemon thread. Safe to call more than once (e.g. if a request handler
@@ -183,12 +199,16 @@ def page_profile():
 
 @app.route("/api/topbar")
 def api_topbar():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     budget = engine.get_budget_status()
     return jsonify(budget)
 
 
 @app.route("/api/order_events")
 def api_order_events():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     since_id = int(request.args.get("since", 0))
     return jsonify(engine.get_order_events(since_id))
 
@@ -197,6 +217,8 @@ def api_order_events():
 
 @app.route("/api/spot")
 def api_spot():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     with engine.lock:
         payload = {
             symbol: {**engine.spot_snapshot.get(symbol, {}), "sparkline": list(engine.sparklines[symbol])}
@@ -220,11 +242,15 @@ def api_candles(symbol: str):
 
 @app.route("/api/positions")
 def api_positions():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     return jsonify(engine.get_positions())
 
 
 @app.route("/api/close_position", methods=["POST"])
 def api_close_position():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     data = request.get_json(force=True)
     result = engine.close_manual(data["symbol"])
     return jsonify(result)
@@ -232,6 +258,8 @@ def api_close_position():
 
 @app.route("/api/cancel_order", methods=["POST"])
 def api_cancel_order():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     data = request.get_json(force=True)
     result = engine.cancel_pending_order(data["symbol"])
     return jsonify(result)
@@ -239,6 +267,8 @@ def api_cancel_order():
 
 @app.route("/api/option_chain/<symbol>")
 def api_option_chain(symbol: str):
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     symbol = symbol.upper()
     with engine.lock:
         snapshot = engine.option_snapshots.get(symbol)
@@ -261,6 +291,8 @@ def api_option_chain(symbol: str):
 
 @app.route("/api/trade", methods=["POST"])
 def api_trade():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     data = request.get_json(force=True)
     result = engine.place_manual_trade(
         symbol=data["symbol"].upper(),
@@ -279,6 +311,8 @@ def api_trade():
 
 @app.route("/api/trades")
 def api_trades():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     trades = []
     for path in sorted(glob.glob(os.path.join(TRADE_LOG_DIR, "trades_*.csv"))):
         with open(path, newline="") as f:
@@ -301,6 +335,8 @@ def api_trades():
 
 @app.route("/api/pnl_curve")
 def api_pnl_curve():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     trades = []
     for path in sorted(glob.glob(os.path.join(TRADE_LOG_DIR, "trades_*.csv"))):
         with open(path, newline="") as f:
@@ -318,11 +354,15 @@ def api_pnl_curve():
 
 @app.route("/api/violations")
 def api_violations():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     return jsonify(engine.get_violations())
 
 
 @app.route("/api/profile", methods=["GET", "POST"])
 def api_profile():
+    if (not_ready := _engine_ready()) is not None:
+        return not_ready
     if request.method == "POST":
         data = request.get_json(force=True)
         cfg = engine.config

@@ -267,7 +267,11 @@ class StrategyEngine:
 
         premium_tracker = self._watch_premium(symbol, option_type, quote, now_dt, interval)
         premium_break = premium_tracker.check_break(quote.ltp)
-        if premium_break != underlying_break:
+        # We always BUY the option (CE or PE) and profit when ITS OWN premium rises,
+        # so confirmation is always a break of the premium's own recent HIGH - never
+        # a literal match against underlying_break's "up"/"down" label (a PE's premium
+        # rises when the underlying falls, so that label would never match otherwise).
+        if premium_break != "up":
             return []  # underlying moved but the premium hasn't confirmed - no trade
 
         expiry_date = None
@@ -278,7 +282,9 @@ class StrategyEngine:
         days_to_expiry = (expiry_date - today_ist()).days if expiry_date else 7
 
         sl_points, target_points = _sl_target_points(symbol, days_to_expiry)
-        opposite_swing = premium_tracker.last_swing_low if option_type == "CE" else premium_tracker.last_swing_high
+        # Premium confirmation is always an "up" break now (see above), so the
+        # structural reference is always the swing low just before that breakout leg.
+        opposite_swing = premium_tracker.last_swing_low
         if opposite_swing is not None:
             structural = abs(quote.ltp - opposite_swing)
             if structural > 0:

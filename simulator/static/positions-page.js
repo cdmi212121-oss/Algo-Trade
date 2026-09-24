@@ -16,7 +16,7 @@ function actionButton(p) {
 }
 
 async function loadPositions() {
-  const positions = await getJSON("/api/positions");
+  const positions = await getJSONWithRetry("/api/positions");
   const wrap = document.getElementById("positions-table-wrap");
   const empty = document.getElementById("positions-empty");
 

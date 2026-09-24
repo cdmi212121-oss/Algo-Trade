@@ -1,5 +1,14 @@
 async function loadProfile() {
-  const p = await getJSON("/api/profile");
+  const msg = document.getElementById("p-message");
+  let p;
+  try {
+    p = await getJSONWithRetry("/api/profile");
+  } catch (e) {
+    msg.textContent = "Could not reach the trading engine: " + e.message;
+    msg.style.color = "var(--critical)";
+    return;
+  }
+  msg.textContent = "";
   document.getElementById("p-client").textContent = p.client_code;
   document.getElementById("p-capital").value = p.starting_capital;
   document.getElementById("p-tradable").value = p.tradable_capital_pct;

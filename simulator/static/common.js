@@ -5,7 +5,25 @@ function fmtNumber(n) {
 
 async function getJSON(url) {
   const res = await fetch(url);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `${url} -> HTTP ${res.status}`);
+  return data;
+}
+
+// One-shot page loaders (Profile, Positions, History, PnL, Violations) call
+// getJSON exactly once with no polling loop to self-heal on - if that single
+// call lands during a cold-start/engine-not-ready window (503 from
+// _engine_ready() in app.py), the page would otherwise stay blank forever.
+// Retries with a fixed delay instead of throwing immediately.
+async function getJSONWithRetry(url, retries = 10, delayMs = 3000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await getJSON(url);
+    } catch (e) {
+      if (i === retries - 1) throw e;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
 }
 
 async function postJSON(url, body) {
@@ -14,7 +32,9 @@ async function postJSON(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `${url} -> HTTP ${res.status}`);
+  return data;
 }
 
 function sparklinePath(values, width, height) {
