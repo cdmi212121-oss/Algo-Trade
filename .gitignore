@@ -16,6 +16,9 @@ price_history/
 simulator/logs/
 simulator/price_history/
 **/tools/cache/
+ORB/logs/
+ORB/trade_logs/
+ORB/scrip_master_*.json
 
 # Claude Code's own internal state - not app code
 .claude/

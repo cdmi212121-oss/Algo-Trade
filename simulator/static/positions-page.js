@@ -67,5 +67,48 @@ async function loadPositions() {
   pill.className = "pill " + (dayPnl >= 0 ? "pill-good" : "pill-critical");
 }
 
+async function loadOrbStatus() {
+  const pill = document.getElementById("orb-status-pill");
+  const wrap = document.getElementById("orb-table-wrap");
+  const empty = document.getElementById("orb-no-position");
+  let data;
+  try {
+    data = await getJSON("/api/orb_status");
+  } catch (e) {
+    pill.textContent = "Unavailable";
+    pill.className = "pill pill-critical";
+    return;
+  }
+
+  if (!data.exists) {
+    pill.textContent = "No trades today yet";
+    pill.className = "pill badge-neutral";
+    wrap.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+
+  const p = data.open_position;
+  if (!p) {
+    pill.textContent = "Flat";
+    pill.className = "pill badge-neutral";
+    wrap.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+
+  pill.textContent = `Open: ${p.side}`;
+  pill.className = "pill pill-good";
+  wrap.hidden = false;
+  empty.hidden = true;
+  document.querySelector("#orb-table tbody").innerHTML = `<tr>
+    <td>${p.side}</td><td>${p.symbol}</td><td>${p.qty}</td>
+    <td>${fmtNumber(p.entry_price)}</td><td>${p.entry_time}</td>
+    <td>${fmtNumber(p.current_sl)}</td><td>${p.target ? fmtNumber(p.target) : "trailing"}</td>
+  </tr>`;
+}
+
 loadPositions();
+loadOrbStatus();
 setInterval(loadPositions, 4000);
+setInterval(loadOrbStatus, 4000);

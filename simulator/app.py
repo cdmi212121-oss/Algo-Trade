@@ -229,6 +229,42 @@ def page_profile():
     return render_template("profile.html", active="profile")
 
 
+# ---- ORB (separate standalone algo in ../ORB) status -------------------
+# Deliberately independent of `engine`/_engine_ready() - ORB runs its own
+# process with its own Angel One session, so this must work even if the
+# main simulator's engine is intentionally not running today (session-
+# conflict avoidance - both currently share one API key). This is a pure
+# read of ORB's own trade log CSV, nothing live.
+
+ORB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ORB")
+
+
+@app.route("/api/orb_status")
+def api_orb_status():
+    path = os.path.join(ORB_DIR, "trade_logs", f"trades_{now_ist():%Y%m%d}.csv")
+    if not os.path.exists(path):
+        return jsonify({"exists": False, "rows": [], "open_position": None})
+
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    open_position = None
+    if rows and rows[-1]["action"] in ("ENTRY", "TRAIL"):
+        entry_row = next(r for r in rows if r["action"] == "ENTRY")
+        last = rows[-1]
+        open_position = {
+            "side": entry_row["side"],
+            "symbol": entry_row["symbol"],
+            "qty": entry_row["qty"],
+            "entry_price": entry_row["price"],
+            "entry_time": entry_row["time"],
+            "current_sl": last["sl"] or entry_row["sl"],
+            "target": entry_row["target"],
+        }
+
+    return jsonify({"exists": True, "rows": rows, "open_position": open_position})
+
+
 # ---- top-bar status, shared across every page -------------------------
 
 @app.route("/api/topbar")

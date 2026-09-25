@@ -31,6 +31,27 @@
       </table>
     </div>
   </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <div class="panel-header">
+      <div>
+        <h2 style="font-size:17px;">ORB (Opening Range Breakout)</h2>
+        <p style="margin:2px 0 0; color:var(--text-secondary); font-size:13px;">Separate standalone algo, own Angel One session - read-only here.</p>
+      </div>
+      <span class="pill" id="orb-status-pill">Loading...</span>
+    </div>
+    <div id="orb-no-position" class="empty-state" hidden>
+      <p>No open ORB position right now.</p>
+    </div>
+    <div class="table-scroll" id="orb-table-wrap" hidden>
+      <table id="orb-table">
+        <thead>
+          <tr><th>Side</th><th>Instrument</th><th>Qty</th><th>Entry</th><th>Entry Time</th><th>Current SL</th><th>Target</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
 {% endblock %}
 {% block scripts %}
 <script src="/static/positions-page.js"></script>
