@@ -26,7 +26,7 @@ try:
 except ImportError:
     winsound = None  # e.g. Voroa's Linux container - alert becomes a no-op there
 
-from angel_data import AngelOneClientProxy
+from angel_data import AngelOneClientProxy, _require_env
 from candles import candles_from_ticks
 from config import TradingConfig
 from ist_clock import is_trading_day, now_ist
@@ -73,18 +73,36 @@ DATA_POLL_END = dtime(15, 30)
 
 
 class TradingEngine:
+    """Construction is deliberately split into two halves:
+
+    1. Everything below except the Angel One connection - TradingConfig,
+       PaperBroker, RiskManager, StrategyEngine, and all plain in-memory
+       state - is pure-local (no network, no subprocess, no third-party
+       library). It cannot hang, so it happens synchronously right here,
+       instantly, every time.
+
+    2. The Angel One connection (AngelOneClientProxy) is the one part that
+       talks to a third-party service and has been observed to
+       occasionally hang or fail on some hosts. It must NEVER be allowed to
+       block anything above - Profile, Positions, Trades, Violations, P&L
+       all only need part 1, and previously were all wrongly gated behind
+       part 2 succeeding first (the actual root cause of Profile "not
+       showing" whenever Angel One was slow to connect - not a bug in the
+       connection code itself, but in what depended on it). It runs in its
+       own background thread, started here, and retries indefinitely with
+       a backoff - self.client stays None (and self.data_feed_error/
+       data_feed_checkpoint explain why) until it succeeds, and every piece
+       of code that actually needs live prices (the tick loop, /api/spot,
+       /api/option_chain) already handles self.client being None or a
+       fetch failing - that was always a real possibility (network blips),
+       just not one that used to also take Profile down with it.
+    """
+
     def __init__(self):
-        print("CHECKPOINT: TradingEngine.__init__ start", flush=True)
         self.config = TradingConfig()
-        print("CHECKPOINT: TradingConfig() done, constructing AngelOneClientProxy", flush=True)
-        self.client = AngelOneClientProxy()
-        print("CHECKPOINT: AngelOneClientProxy() done, constructing PaperBroker", flush=True)
         self.broker = PaperBroker(starting_capital=self.config.starting_capital)
-        print("CHECKPOINT: PaperBroker() done, constructing RiskManager", flush=True)
         self.risk = RiskManager(self.config)
-        print("CHECKPOINT: RiskManager() done, constructing StrategyEngine", flush=True)
         self.strategy = StrategyEngine()
-        print("CHECKPOINT: StrategyEngine() done, TradingEngine.__init__ finishing", flush=True)
 
         self.lock = threading.RLock()
         self.ltp_map: dict[str, float] = {}
@@ -98,6 +116,38 @@ class TradingEngine:
         self._position_ticks: dict[str, deque] = {}  # per open position, for scale-out candle detection
         self.order_events: deque = deque(maxlen=100)  # for the UI's order-placed/filled/rejected/cancelled toasts
         self._next_event_id = 1
+
+        # Known instantly from the env var alone - Profile can show this
+        # (masked) long before the actual connection succeeds.
+        self.client_code = _require_env("ANGEL_CLIENT_CODE")
+        self.client: AngelOneClientProxy | None = None
+        self.data_feed_checkpoint = "not_started"
+        self.data_feed_error: str | None = None
+
+    def _connect_data_feed(self) -> None:
+        """Runs forever in its own background thread. Retries with a fixed
+        backoff rather than a bounded attempt count - if Angel One is
+        genuinely unreachable, that's a real ongoing problem worth
+        retrying indefinitely (market hours could start at any time), not
+        something to eventually give up on and require a manual restart
+        for."""
+        backoff_s = 15
+        while True:
+            try:
+                self.data_feed_checkpoint = "connecting"
+                client = AngelOneClientProxy()
+                with self.lock:
+                    self.client = client
+                self.data_feed_checkpoint = "connected"
+                self.data_feed_error = None
+                log.info("Angel One data feed connected.")
+                return
+            except Exception as exc:
+                self.data_feed_error = f"{type(exc).__name__}: {exc}"
+                self.data_feed_checkpoint = "retrying"
+                log.error("Angel One data feed connection failed, retrying in %ss: %s",
+                          backoff_s, self.data_feed_error)
+                time.sleep(backoff_s)
 
     def _alert_position_created(self) -> None:
         """Audible alert the moment the algo itself opens a position (auto
@@ -148,8 +198,8 @@ class TradingEngine:
     # ---- background loop -------------------------------------------------
 
     def start(self) -> None:
-        thread = threading.Thread(target=self._run_forever, daemon=True)
-        thread.start()
+        threading.Thread(target=self._connect_data_feed, daemon=True, name="angel-connect").start()
+        threading.Thread(target=self._run_forever, daemon=True, name="engine-tick").start()
 
     def _run_forever(self) -> None:
         log.info("Trading engine starting. Symbols=%s poll=%ss. No real orders are ever placed.",
@@ -166,6 +216,21 @@ class TradingEngine:
     def _tick(self) -> None:
         now_dt = now_ist()
         now = now_dt.time()
+
+        with self.lock:
+            client = self.client
+        if client is None:
+            # Angel One isn't connected yet (still connecting/retrying in
+            # its own background thread) - once connected, self.client
+            # stays a valid, self-healing proxy forever (it respawns its
+            # own worker internally on failure - see AngelOneClientProxy),
+            # so this only ever applies during the very first connection
+            # attempt, before any position could exist to manage anyway.
+            # The dashboard's other pages (Profile, Positions, Trades,
+            # Violations) never depended on this at all.
+            with self.lock:
+                self.last_updated = now_dt.isoformat(timespec="seconds")
+            return
 
         with self.lock:
             have_any_snapshot = bool(self.spot_snapshot) and bool(self.option_snapshots)
@@ -188,7 +253,7 @@ class TradingEngine:
         # Index spot prices - always polled (within the window above),
         # drives dashboard tiles/candles regardless of whether the
         # algo/options side is active.
-        spot = self.client.get_spot_snapshot(INDEX_SYMBOLS)
+        spot = client.get_spot_snapshot(INDEX_SYMBOLS)
         with self.lock:
             for symbol, data in spot.items():
                 self.spot_snapshot[symbol] = data
@@ -220,7 +285,7 @@ class TradingEngine:
             if not market_open_now and already_have_snapshot:
                 continue
             try:
-                snapshot = self.client.get_option_chain(symbol, strikes_around_atm=20)
+                snapshot = client.get_option_chain(symbol, strikes_around_atm=20)
             except Exception:
                 log.exception("Failed to fetch option chain for %s", symbol)
                 continue

@@ -16,31 +16,31 @@ No real orders are ever placed anywhere in this app - AngelOneClient
 (angel_data.py) is used for market data only; there is no order-placement
 code path anywhere in this codebase.
 
-Startup architecture (important for Gunicorn/Voroa):
+Startup architecture (important for Gunicorn/Render):
 The Flask `app` object and every route below are ready the instant this
-module finishes importing, regardless of Angel One. The TradingEngine
-(which needs ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/ANGEL_TOTP_SECRET and
-talks to Angel One) is constructed and started in a background daemon
-thread kicked off at the bottom of this module - never inline in the
-import path. If Angel One is unreachable, credentials are wrong, or the
-engine throws for any other reason, that thread logs the failure and dies;
-Flask, every other route, and /health all keep working regardless. This
-matters specifically because Gunicorn imports this module as `app:app` -
-it never runs the `if __name__ == "__main__":` block, so nothing engine-
-related can be gated behind that block, and nothing that can fail must
-run directly in module-level code outside a try/except.
+module finishes importing. TradingEngine construction is now pure-local
+(TradingConfig/PaperBroker/RiskManager/StrategyEngine - no network, no
+subprocess) and provably fast, so it happens directly below, synchronously,
+wrapped in a try/except - the only way it can fail is a missing/invalid
+required env var, which is immediate and clear, never a hang.
+
+The Angel One connection (the one part that talks to a third-party service
+and has been observed to occasionally be slow or fail) lives entirely
+inside TradingEngine now (engine.client starts None, a background thread
+retries indefinitely - see engine.py's TradingEngine docstring) and can
+NEVER block engine construction, Flask startup, or any route that doesn't
+itself need live prices. This is the actual fix for Profile "not showing":
+Profile never needed Angel One in the first place, it was only ever gated
+behind it by an incidental architecture decision - now it isn't.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import csv
 import glob
 import logging
 import multiprocessing
 import os
-import threading
-import time
 from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
@@ -60,160 +60,47 @@ app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # never let browsers cache stale JS
 TRADE_LOG_DIR = "logs"
 PRICE_HISTORY_DIR = "price_history"
 
-# engine starts as None and stays None if the background startup thread
-# never succeeds (e.g. bad/missing Angel One credentials) - every route
-# below except /health reads through this, and will 500 on a real request
-# if the engine never came up. /health never touches it.
+# engine stays None only if construction itself raised (missing/invalid
+# required env var - immediate and rare, not a hang). Every /api/* route
+# below reads through this and gets a clean 503 rather than a crash if so.
 engine: TradingEngine | None = None
-engine_error: str | None = None  # str(exception) if startup failed - surfaced on /health for easy remote diagnosis
-engine_checkpoint: str = "not_started"  # last reached step - pinpoints a HANG (no exception, no success) on /health
-engine_startup_attempt: int = 0  # which retry we're on - surfaced on /health
-_engine_start_lock = threading.Lock()
-_engine_started = False
-_engine_start_ts: float = 0.0  # time.time() when startup began - used by /health's stuck-detector
-
-# AngelOneClientProxy (angel_data.py) now does its own robust retry
-# internally - a hang inside SmartConnect() runs in a dedicated child OS
-# process that gets hard-killed and respawned on timeout, which a thread-
-# based timeout alone could never reliably do (previously confirmed stuck
-# for 140s+ with the in-process timeout never firing at all, because the
-# stuck thread was starving the GIL badly enough that even the watchdog
-# thread waiting on ITS OWN timeout never got scheduled). That's the real
-# fix now; this outer wrapper is just a last-resort safety net for anything
-# else in TradingEngine.__init__ (PaperBroker/RiskManager/StrategyEngine -
-# all pure-local, shouldn't ever hang, but cheap insurance regardless).
-# Timeout here must comfortably exceed AngelOneClientProxy's own worst case
-# (6 attempts * 45s + 5 delays * 5s = ~295s).
-ENGINE_STARTUP_TIMEOUT_S = 320
-ENGINE_STARTUP_MAX_ATTEMPTS = 2
-ENGINE_STARTUP_RETRY_DELAY_S = 5
-# Worst case for a legitimate (non-hung) startup: 2 attempts * 320s + 1
-# retry delay * 5s = ~645s. Past this threshold, /health deliberately starts
-# returning 503 instead of its usual always-200, so Render's own platform-
-# level health-check auto-restart (the thing that already reliably clears a
-# genuine hang when done manually) kicks in without needing anyone to click
-# "Restart service". Should rarely matter now - AngelOneClientProxy's own
-# subprocess-kill self-healing is what actually recovers, both at startup
-# and for the rest of the day.
-ENGINE_STUCK_HEALTH_THRESHOLD_S = 700
-
-
-def _set_checkpoint(name: str) -> None:
-    global engine_checkpoint
-    engine_checkpoint = name
-    log.info("Engine startup checkpoint: %s", name)
+engine_error: str | None = None
 
 
 def _engine_ready():
-    """Every /api/* route below reads `engine` directly. On a cold Render
-    start (or any startup delay) it's still None for a real window - without
-    this guard that's a raw AttributeError -> Flask's default HTML 500 page,
-    which breaks res.json() on the frontend and leaves pages like Profile
-    permanently blank (nothing there retries a failed initial load). Returns
-    a clean JSON 503 the frontend can retry against, or None when ready."""
+    """Returns a clean JSON 503 if engine construction itself failed
+    (missing/invalid env var), or None when ready - which in practice is
+    almost immediately after this module imports, every time, since
+    construction no longer does anything that can be slow. This does NOT
+    check whether the Angel One data feed is connected - routes that
+    specifically need live prices check engine.client themselves."""
     if engine is None:
-        return jsonify({
-            "error": "Trading engine is still starting up - please retry shortly.",
-            "engine_checkpoint": engine_checkpoint,
-            "engine_error": engine_error,
-        }), 503
+        return jsonify({"error": "Trading engine failed to start.", "engine_error": engine_error}), 503
     return None
 
 
 def _start_engine_once() -> None:
-    """Build and start the TradingEngine exactly once, in a background
-    daemon thread. Safe to call more than once (e.g. if a request handler
-    ever wanted to trigger it) - only the first call does anything, and the
-    lock keeps that decision atomic. Runs fully off the import path, so a
-    slow or failing Angel One connection can never delay or crash Flask's
-    own startup."""
-    global _engine_started, _engine_start_ts
-    with _engine_start_lock:
-        if _engine_started:
-            return
-        _engine_started = True
-        _engine_start_ts = time.time()
-
-    def _run() -> None:
-        global engine, engine_error, engine_startup_attempt
-        _set_checkpoint("thread_started")
-        log.info("Trading engine startup initiated.")
-
-        for attempt in range(1, ENGINE_STARTUP_MAX_ATTEMPTS + 1):
-            engine_startup_attempt = attempt
-            try:
-                _set_checkpoint(f"constructing_trading_engine (attempt {attempt})")
-                # TradingEngine() constructs AngelOneClient() internally, which
-                # constructs SmartApi's SmartConnect() - a third-party class
-                # whose __init__ we've already neutralized the two known
-                # unguarded filesystem writes in (angel_data.py). On Render's
-                # heavily CPU-throttled free tier, construction can still be
-                # very slow (not necessarily hung) - especially right after a
-                # cold container boot. Run each attempt with a hard timeout,
-                # and RETRY on timeout with a fresh thread/fresh SmartConnect
-                # object rather than giving up forever after one slow attempt
-                # - each attempt is fully independent (no shared state with a
-                # previous slow/stuck one), so a bad attempt doesn't poison
-                # the next one.
-                #
-                # Deliberately NOT using "with ThreadPoolExecutor(...) as pool:"
-                # here - exiting that block calls pool.shutdown(wait=True), which
-                # blocks until the stuck submitted call finishes, silently
-                # defeating the whole timeout. Leaving the pool (and its one
-                # stuck worker thread, if it never returns) to be garbage
-                # collected is the correct trade-off here.
-                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                future = pool.submit(TradingEngine)
-                try:
-                    new_engine = future.result(timeout=ENGINE_STARTUP_TIMEOUT_S)
-                except concurrent.futures.TimeoutError:
-                    raise RuntimeError(
-                        f"TradingEngine() construction did not finish within "
-                        f"{ENGINE_STARTUP_TIMEOUT_S}s (attempt {attempt}/"
-                        f"{ENGINE_STARTUP_MAX_ATTEMPTS})."
-                    )
-                _set_checkpoint("calling_start")
-                new_engine.start()
-                _set_checkpoint("done")
-                engine = new_engine
-                engine_error = None
-                log.info("Trading engine started successfully on attempt %d.", attempt)
-                return
-            except Exception as exc:
-                engine_error = f"{type(exc).__name__}: {exc}"
-                log.critical(
-                    "Trading engine startup attempt %d/%d failed (commonly: "
-                    "missing/invalid ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_PIN/"
-                    "ANGEL_TOTP_SECRET, or Angel One being unreachable, or slow "
-                    "SmartConnect() construction on a throttled host). Flask "
-                    "keeps running regardless - only the dashboard/API routes "
-                    "are affected, not /health.",
-                    attempt, ENGINE_STARTUP_MAX_ATTEMPTS, exc_info=True,
-                )
-                if attempt < ENGINE_STARTUP_MAX_ATTEMPTS:
-                    _set_checkpoint(f"retrying_after_failure (attempt {attempt})")
-                    time.sleep(ENGINE_STARTUP_RETRY_DELAY_S)
-
-        _set_checkpoint("gave_up")
-        log.critical(
-            "Trading engine failed to start after %d attempts - giving up. "
-            "A redeploy or manual restart is needed to try again.",
-            ENGINE_STARTUP_MAX_ATTEMPTS,
-        )
-
-    threading.Thread(target=_run, daemon=True, name="engine-startup").start()
+    global engine, engine_error
+    try:
+        new_engine = TradingEngine()
+        new_engine.start()
+        engine = new_engine
+        log.info("Trading engine started (Angel One data feed connecting in the background).")
+    except Exception as exc:
+        engine_error = f"{type(exc).__name__}: {exc}"
+        log.critical("Trading engine failed to start: %s", engine_error, exc_info=True)
 
 
-# AngelOneClientProxy spawns a child process for the real Angel One
-# connection (angel_data.py/angel_worker.py). With the "spawn" start method,
-# the child reconstructs its __main__ module by re-importing whatever
-# module was __main__ in the parent - when this app is run directly
-# (`python app.py`, the local-dev path), that's THIS module, so without this
-# guard the child would also hit this exact line and recursively try to
-# start its own nested engine (which would try to spawn ITS OWN child,
-# forever). Under Gunicorn (`gunicorn app:app`), __main__ is gunicorn's own
-# script, not this module, so this guard is a no-op there - but it's cheap
-# and correct to have unconditionally either way.
+# AngelOneClientProxy (inside TradingEngine, started via engine.start())
+# spawns a child process for the real Angel One connection - "fork" on
+# Linux/Render, "spawn" on Windows (fork isn't available there at all; see
+# angel_data.py). With "spawn", the child reconstructs its __main__ module
+# by re-importing whatever module was __main__ in the parent - for local
+# `python app.py` runs, that's this module, so without this guard the child
+# would also hit this exact line and recursively try to start its own
+# nested engine. Under Gunicorn (`gunicorn app:app`) or with "fork",
+# __main__ is never this module, so this guard is a no-op there - but it's
+# cheap and correct to have unconditionally either way.
 if multiprocessing.current_process().name == "MainProcess":
     _start_engine_once()
 
@@ -477,7 +364,7 @@ def api_profile():
                 cfg.symbols = valid or cfg.symbols
         return jsonify({"ok": True})
 
-    masked_client_code = engine.client.client_code[:3] + "***" + engine.client.client_code[-2:]
+    masked_client_code = engine.client_code[:3] + "***" + engine.client_code[-2:]
     return jsonify({
         "client_code": masked_client_code,
         "starting_capital": engine.config.starting_capital,
@@ -495,40 +382,23 @@ def api_profile():
 
 @app.route("/health")
 def api_health():
-    """Liveness check for Render (or any host). Independent of
-    TradingEngine/AngelOneClient/Angel One login/TOTP/market data/strategy
-    execution for as long as startup is still plausibly in progress - must
-    return 200 even if all of those are broken, unstarted, or mid-crash, so
-    a data-feed problem never takes down the whole deployment during a
-    normal (if slow) boot. engine_running/engine_error/etc are informational
-    only (plain variable reads, no lock, can't throw).
-
-    The one exception: if startup has been stuck (no success, no final
-    failure) for far longer than any legitimate attempt+retry sequence could
-    take, this deliberately flips to 503. A hang inside SmartConnect() has
-    been observed to defeat our own in-process timeout entirely (the
-    watcher thread never gets scheduled), so retries alone can't recover -
-    only a full process restart does (confirmed: manually restarting the
-    Render service always clears it). Returning 503 here lets Render's own
-    platform-level health-check auto-restart do that automatically instead
-    of needing a manual click every time."""
-    stuck = (
-        engine is None
-        and engine_checkpoint != "gave_up"  # that case fails immediately below anyway
-        and _engine_start_ts > 0
-        and (time.time() - _engine_start_ts) > ENGINE_STUCK_HEALTH_THRESHOLD_S
-    )
-    gave_up = engine is None and engine_checkpoint == "gave_up"
+    """Liveness check for Render (or any host). Always 200 - engine
+    construction is pure-local and provably fast now, so `engine is None`
+    only ever means a genuine, immediate startup failure (missing/invalid
+    env var), which is informational here, not a reason to fail the health
+    check (Flask itself is still fully up and serving). The Angel One data
+    feed's own status (data_feed_checkpoint/data_feed_error) is similarly
+    informational only - it retries indefinitely on its own and restarting
+    the whole app would not help a slow/unreachable third-party service
+    reconnect any faster, so this deliberately never fails the health check
+    for that either."""
     payload = {
-        "status": "stuck" if (stuck or gave_up) else "ok",
+        "status": "ok",
         "engine_running": engine is not None,
         "engine_error": engine_error,
-        "engine_checkpoint": engine_checkpoint,
-        "engine_startup_attempt": engine_startup_attempt,
-        "engine_startup_max_attempts": ENGINE_STARTUP_MAX_ATTEMPTS,
+        "data_feed_checkpoint": engine.data_feed_checkpoint if engine else None,
+        "data_feed_error": engine.data_feed_error if engine else None,
     }
-    if stuck or gave_up:
-        return jsonify(payload), 503
     return jsonify(payload)
 
 
