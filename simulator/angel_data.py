@@ -21,7 +21,9 @@ shared or committed.
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
+import queue
 import time
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -274,6 +276,107 @@ class AngelOneClient:
             quotes=quotes,
             lot_size=lot_size,
         )
+
+
+class AngelOneClientProxy:
+    """Drop-in replacement for AngelOneClient that runs the real client in
+    a dedicated child process (see angel_worker.py for why and the wire
+    protocol), so a hang inside SmartConnect() can always be recovered from
+    by killing that process - something a purely thread-based timeout
+    cannot reliably do. Exposes only what's actually used elsewhere
+    (engine.py's get_spot_snapshot/get_option_chain calls, app.py's
+    client_code read) - anything else added to AngelOneClient later needs a
+    matching passthrough method added here too.
+
+    Self-heals during the day too, not just at startup: if a single call
+    hangs past CALL_TIMEOUT_S, the worker is killed and a fresh one spawned
+    before raising - the engine's own per-tick try/except already logs and
+    continues, so the NEXT tick gets a working worker automatically, with no
+    manual restart and no Render redeploy needed.
+    """
+
+    STARTUP_TIMEOUT_S = 45   # per spawn attempt
+    CALL_TIMEOUT_S = 30      # per individual method call once running
+    MAX_STARTUP_ATTEMPTS = 6
+    RESTART_DELAY_S = 5
+
+    def __init__(self):
+        # Known directly from the env var - no need to ask the worker just
+        # for this, and it lets app.py's masked client_code display work
+        # even while a worker (re)spawn is still in progress.
+        self.client_code = _require_env("ANGEL_CLIENT_CODE")
+        self._ctx = multiprocessing.get_context("spawn")  # not "fork" - avoids the child inheriting Flask's/gunicorn's already-open sockets and threads
+        self._process: Optional[multiprocessing.Process] = None
+        self._request_q = None
+        self._response_q = None
+        self._start_with_retry()
+
+    def _start_with_retry(self) -> None:
+        last_error = "unknown"
+        for attempt in range(1, self.MAX_STARTUP_ATTEMPTS + 1):
+            print(f"CHECKPOINT: AngelOneClient worker spawn attempt {attempt}/{self.MAX_STARTUP_ATTEMPTS}", flush=True)
+            ok, detail = self._spawn_and_wait_ready()
+            if ok:
+                print("CHECKPOINT: AngelOneClient worker ready", flush=True)
+                return
+            last_error = detail
+            print(f"CHECKPOINT: AngelOneClient worker spawn attempt {attempt} failed: {detail}", flush=True)
+            self._kill_process()
+            if attempt < self.MAX_STARTUP_ATTEMPTS:
+                time.sleep(self.RESTART_DELAY_S)
+        raise RuntimeError(
+            f"AngelOneClient worker process failed to start after "
+            f"{self.MAX_STARTUP_ATTEMPTS} attempts: {last_error}"
+        )
+
+    def _spawn_and_wait_ready(self) -> tuple[bool, str]:
+        self._request_q = self._ctx.Queue()
+        self._response_q = self._ctx.Queue()
+        from angel_worker import _worker_main
+        self._process = self._ctx.Process(
+            target=_worker_main, args=(self._request_q, self._response_q), daemon=True,
+        )
+        self._process.start()
+        try:
+            status, payload = self._response_q.get(timeout=self.STARTUP_TIMEOUT_S)
+        except queue.Empty:
+            return False, f"no response within {self.STARTUP_TIMEOUT_S}s (worker stuck or crashed silently)"
+        if status == "ready":
+            return True, ""
+        return False, str(payload)  # "startup_error" - e.g. missing/invalid credentials
+
+    def _kill_process(self) -> None:
+        if self._process is not None and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=5)
+            if self._process.is_alive():
+                self._process.kill()
+        self._process = None
+
+    def _call(self, method: str, *args, **kwargs):
+        if self._process is None or not self._process.is_alive():
+            self._start_with_retry()
+        self._request_q.put(("call", method, args, kwargs))
+        try:
+            status, payload = self._response_q.get(timeout=self.CALL_TIMEOUT_S)
+        except queue.Empty:
+            print(f"CHECKPOINT: AngelOneClient worker call to {method} timed out after "
+                  f"{self.CALL_TIMEOUT_S}s - killing and respawning", flush=True)
+            self._kill_process()
+            self._start_with_retry()
+            raise RuntimeError(
+                f"AngelOneClient worker call to {method} timed out - a fresh worker "
+                "has been started, this will work again next tick"
+            )
+        if status == "error":
+            raise RuntimeError(f"AngelOneClient worker error in {method}: {payload}")
+        return payload
+
+    def get_spot_snapshot(self, symbols: list[str]) -> dict[str, dict]:
+        return self._call("get_spot_snapshot", symbols)
+
+    def get_option_chain(self, symbol: str, strikes_around_atm: int = 10) -> OptionChainSnapshot:
+        return self._call("get_option_chain", symbol, strikes_around_atm=strikes_around_atm)
 
 
 if __name__ == "__main__":

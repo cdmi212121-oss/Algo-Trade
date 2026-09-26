@@ -37,6 +37,7 @@ import concurrent.futures
 import csv
 import glob
 import logging
+import multiprocessing
 import os
 import threading
 import time
@@ -71,19 +72,30 @@ _engine_start_lock = threading.Lock()
 _engine_started = False
 _engine_start_ts: float = 0.0  # time.time() when startup began - used by /health's stuck-detector
 
-ENGINE_STARTUP_TIMEOUT_S = 45  # Render free tier is heavily CPU-throttled; 25s was cutting it close
-ENGINE_STARTUP_MAX_ATTEMPTS = 6
+# AngelOneClientProxy (angel_data.py) now does its own robust retry
+# internally - a hang inside SmartConnect() runs in a dedicated child OS
+# process that gets hard-killed and respawned on timeout, which a thread-
+# based timeout alone could never reliably do (previously confirmed stuck
+# for 140s+ with the in-process timeout never firing at all, because the
+# stuck thread was starving the GIL badly enough that even the watchdog
+# thread waiting on ITS OWN timeout never got scheduled). That's the real
+# fix now; this outer wrapper is just a last-resort safety net for anything
+# else in TradingEngine.__init__ (PaperBroker/RiskManager/StrategyEngine -
+# all pure-local, shouldn't ever hang, but cheap insurance regardless).
+# Timeout here must comfortably exceed AngelOneClientProxy's own worst case
+# (6 attempts * 45s + 5 delays * 5s = ~295s).
+ENGINE_STARTUP_TIMEOUT_S = 320
+ENGINE_STARTUP_MAX_ATTEMPTS = 2
 ENGINE_STARTUP_RETRY_DELAY_S = 5
-# Worst case for a legitimate (non-hung) startup: 6 attempts * 45s + 5 retry
-# delays * 5s = ~295s. A real hang has been observed to defeat even the
-# per-attempt timeout entirely (the watcher thread itself never gets
-# scheduled - see the "constructing_trading_engine (attempt 1)" stuck-for-
-# 140s+ incident), so retries alone can't recover from it. Past this
-# threshold, /health deliberately starts returning 503 instead of its usual
-# always-200, so Render's own platform-level health-check auto-restart (the
-# thing that already reliably clears this when done manually) kicks in
-# without needing anyone to click "Restart service".
-ENGINE_STUCK_HEALTH_THRESHOLD_S = 420
+# Worst case for a legitimate (non-hung) startup: 2 attempts * 320s + 1
+# retry delay * 5s = ~645s. Past this threshold, /health deliberately starts
+# returning 503 instead of its usual always-200, so Render's own platform-
+# level health-check auto-restart (the thing that already reliably clears a
+# genuine hang when done manually) kicks in without needing anyone to click
+# "Restart service". Should rarely matter now - AngelOneClientProxy's own
+# subprocess-kill self-healing is what actually recovers, both at startup
+# and for the rest of the day.
+ENGINE_STUCK_HEALTH_THRESHOLD_S = 700
 
 
 def _set_checkpoint(name: str) -> None:
@@ -192,7 +204,18 @@ def _start_engine_once() -> None:
     threading.Thread(target=_run, daemon=True, name="engine-startup").start()
 
 
-_start_engine_once()
+# AngelOneClientProxy spawns a child process for the real Angel One
+# connection (angel_data.py/angel_worker.py). With the "spawn" start method,
+# the child reconstructs its __main__ module by re-importing whatever
+# module was __main__ in the parent - when this app is run directly
+# (`python app.py`, the local-dev path), that's THIS module, so without this
+# guard the child would also hit this exact line and recursively try to
+# start its own nested engine (which would try to spawn ITS OWN child,
+# forever). Under Gunicorn (`gunicorn app:app`), __main__ is gunicorn's own
+# script, not this module, so this guard is a no-op there - but it's cheap
+# and correct to have unconditionally either way.
+if multiprocessing.current_process().name == "MainProcess":
+    _start_engine_once()
 
 print("Web server is ready.")
 

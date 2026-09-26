@@ -26,7 +26,7 @@ try:
 except ImportError:
     winsound = None  # e.g. Voroa's Linux container - alert becomes a no-op there
 
-from angel_data import AngelOneClient
+from angel_data import AngelOneClientProxy
 from candles import candles_from_ticks
 from config import TradingConfig
 from ist_clock import now_ist
@@ -76,9 +76,9 @@ class TradingEngine:
     def __init__(self):
         print("CHECKPOINT: TradingEngine.__init__ start", flush=True)
         self.config = TradingConfig()
-        print("CHECKPOINT: TradingConfig() done, constructing AngelOneClient", flush=True)
-        self.client = AngelOneClient()
-        print("CHECKPOINT: AngelOneClient() done, constructing PaperBroker", flush=True)
+        print("CHECKPOINT: TradingConfig() done, constructing AngelOneClientProxy", flush=True)
+        self.client = AngelOneClientProxy()
+        print("CHECKPOINT: AngelOneClientProxy() done, constructing PaperBroker", flush=True)
         self.broker = PaperBroker(starting_capital=self.config.starting_capital)
         print("CHECKPOINT: PaperBroker() done, constructing RiskManager", flush=True)
         self.risk = RiskManager(self.config)
