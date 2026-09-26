@@ -64,7 +64,6 @@ from swing import SwingTracker, candle_bias
 PREMIUM_HISTORY_DIR = "price_history"
 
 CANDLE_SWITCH_TIME = time(10, 30)
-SIDEWAYS_WINDOW = (time(11, 30), time(13, 30))
 SLOW_DIRECTIONAL_WINDOW = (time(13, 30), time(15, 30))
 MAX_PREMIUM_TICKS = 2000  # per watched instrument per day - plenty for intraday candles
 
@@ -203,10 +202,15 @@ class StrategyEngine:
                 checked.add(checkpoint)
 
     def _session_gate(self, now: time, expiry_today: bool) -> tuple[bool, float]:
-        """(allowed, size_multiplier)."""
-        start, end = SIDEWAYS_WINDOW
-        if start <= now < end:
-            return (True, 0.5) if expiry_today else (False, 0.0)
+        """(allowed, size_multiplier).
+
+        The course's §2 "sideways market, avoid trading" 11:30-13:30 block
+        has been explicitly removed per user instruction (2026-09-25) - the
+        user does not believe the market goes sideways in that window and
+        wants it treated as normal trending time, full size, no exception.
+        This is a deliberate deviation from the literal course rule, not a
+        bug fix - kept as a comment so it's not mistaken for one later.
+        """
         start, end = SLOW_DIRECTIONAL_WINDOW
         if start <= now < end:
             return True, 0.5
