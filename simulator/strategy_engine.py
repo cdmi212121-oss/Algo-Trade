@@ -243,6 +243,22 @@ class StrategyEngine:
         interval = candle_interval(now)  # 1-min before 10:30, 3-min after - §2, literal
         expiry_today = is_expiry_day(snapshot)
 
+        # Keep BOTH CE and PE premium history warm every tick, from market
+        # open, regardless of the underlying's current break direction or
+        # the session gate below - so whichever side eventually matters
+        # already has real swing history the moment it's needed, instead of
+        # a cold start from zero right when the underlying breaks (a
+        # recurring "no ticks recorded today" gap right when it mattered
+        # most). select_strike is a pure lookup over the already-fetched
+        # snapshot - no extra Angel One API calls either side.
+        quotes = {}
+        premium_trackers = {}
+        for ot in ("CE", "PE"):
+            q = select_strike(snapshot, ot, now)
+            quotes[ot] = q
+            if q is not None:
+                premium_trackers[ot] = self._watch_premium(symbol, ot, q, now_dt, interval)
+
         allowed, size_multiplier = self._session_gate(now, expiry_today)
         if not allowed:
             return []
@@ -265,11 +281,13 @@ class StrategyEngine:
             return []  # contradicts the standing 15-min directional bias (§2) - skip
 
         option_type = "CE" if underlying_break == "up" else "PE"
-        quote = select_strike(snapshot, option_type, now)
+        quote = quotes.get(option_type)
         if quote is None:
             return []
 
-        premium_tracker = self._watch_premium(symbol, option_type, quote, now_dt, interval)
+        premium_tracker = premium_trackers.get(option_type)
+        if premium_tracker is None:
+            return []
         premium_break = premium_tracker.check_break(quote.ltp)
         # We always BUY the option (CE or PE) and profit when ITS OWN premium rises,
         # so confirmation is always a break of the premium's own recent HIGH - never
