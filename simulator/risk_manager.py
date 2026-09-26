@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import time
 
 from config import TradingConfig
-from ist_clock import now_ist, today_ist
+from ist_clock import is_trading_day, now_ist, today_ist
 
 
 class RiskManager:
@@ -38,7 +38,7 @@ class RiskManager:
 
     def within_trading_hours(self, now: time | None = None) -> bool:
         now = now or now_ist().time()
-        return self.config.market_open <= now <= self.config.no_trade_after
+        return is_trading_day() and self.config.market_open <= now <= self.config.no_trade_after
 
     def should_square_off(self, now: time | None = None) -> bool:
         now = now or now_ist().time()

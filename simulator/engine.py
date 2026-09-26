@@ -29,7 +29,7 @@ except ImportError:
 from angel_data import AngelOneClientProxy
 from candles import candles_from_ticks
 from config import TradingConfig
-from ist_clock import now_ist
+from ist_clock import is_trading_day, now_ist
 from market_data import OptionChainSnapshot, instrument_key
 from paper_broker import ExitReason, OrderType, PaperBroker, Side
 from risk_manager import RiskManager
@@ -203,7 +203,7 @@ class TradingEngine:
                 self._forget_position(trade.symbol)
             self._squared_off_today = True
 
-        market_open_now = self.config.market_open <= now <= self.config.market_close
+        market_open_now = is_trading_day() and self.config.market_open <= now <= self.config.market_close
 
         # While the market's closed: keep whatever option-chain snapshot we
         # already have (Angel still answers with the last session's data

@@ -37,3 +37,17 @@ def now_ist() -> datetime:
 def today_ist() -> date:
     """Current IST calendar date."""
     return now_ist().date()
+
+
+def is_trading_day(day: date | None = None) -> bool:
+    """True Monday-Friday, False on Saturday/Sunday. Every market-open
+    check in this app was previously a pure time-of-day comparison with no
+    day-of-week awareness at all, so e.g. 11 AM on a Saturday read as
+    "market open" just because the clock happened to fall inside
+    9:15-15:30 - confirmed directly (2026-09-26, a Saturday, showing
+    market_open_now: true). This does NOT know about NSE/BSE exchange
+    holidays (Diwali, Republic Day, etc.) - that needs an actual maintained
+    holiday calendar, which is a separate, harder problem; this only fixes
+    the weekend case."""
+    day = day or today_ist()
+    return day.weekday() < 5  # Monday=0 ... Friday=4, Saturday=5, Sunday=6
