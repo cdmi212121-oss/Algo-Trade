@@ -24,6 +24,7 @@ import json
 import multiprocessing
 import os
 import queue
+import sys
 import time
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -305,7 +306,23 @@ class AngelOneClientProxy:
         # for this, and it lets app.py's masked client_code display work
         # even while a worker (re)spawn is still in progress.
         self.client_code = _require_env("ANGEL_CLIENT_CODE")
-        self._ctx = multiprocessing.get_context("spawn")  # not "fork" - avoids the child inheriting Flask's/gunicorn's already-open sockets and threads
+        # "fork" on Linux (Render/production) - a direct OS syscall with no
+        # re-exec or re-import of the interpreter, so there's far less that
+        # can go wrong in an unusual container environment. "spawn" is the
+        # only option on Windows (local dev) at all, and was previously
+        # forced everywhere - but on Render, a deployment was observed stuck
+        # with the worker never reporting ready OR a startup error even
+        # long past every internal timeout, consistent with .start() itself
+        # hanging during spawn's re-exec/bootstrap, before our own timeout
+        # code ever gets a chance to run. fork's only real documented risk
+        # is with a multi-threaded parent (which this is, Flask + the
+        # engine-startup thread) - but _worker_main touches no inherited
+        # parent state at all (it only imports angel_data fresh and builds
+        # a new client), so that risk is low in practice; a fork-related
+        # issue would also fail fast (child exits) rather than hang
+        # silently, which is strictly easier to recover from via the
+        # existing kill-and-retry loop below.
+        self._ctx = multiprocessing.get_context("spawn" if sys.platform == "win32" else "fork")
         self._process: Optional[multiprocessing.Process] = None
         self._request_q = None
         self._response_q = None
