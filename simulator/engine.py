@@ -217,6 +217,19 @@ class TradingEngine:
         now_dt = now_ist()
         now = now_dt.time()
 
+        # Pure date/time logic - never needed Angel One at all, so it must
+        # be computed and kept current regardless of whether the data feed
+        # has connected yet. Previously computed further down, past an
+        # early-return for "client not connected yet" - meaning
+        # market_open_now silently stayed stuck at its False default for
+        # as long as the Angel One connection took to come up, even well
+        # into real market hours (confirmed live on Render: 9:16 AM on a
+        # trading Monday, data feed still connecting, market_open_now
+        # incorrectly showing false).
+        market_open_now = is_trading_day() and self.config.market_open <= now <= self.config.market_close
+        with self.lock:
+            self.market_open_now = market_open_now
+
         with self.lock:
             client = self.client
         if client is None:
@@ -268,7 +281,8 @@ class TradingEngine:
                 self._forget_position(trade.symbol)
             self._squared_off_today = True
 
-        market_open_now = is_trading_day() and self.config.market_open <= now <= self.config.market_close
+        # market_open_now was already computed and stored at the top of
+        # this method (needs to stay current regardless of client state).
 
         # While the market's closed: keep whatever option-chain snapshot we
         # already have (Angel still answers with the last session's data
