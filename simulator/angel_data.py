@@ -27,6 +27,7 @@ import queue
 import sys
 import time
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from typing import Optional
 
 import logzero
@@ -278,6 +279,50 @@ class AngelOneClient:
             lot_size=lot_size,
         )
 
+    def get_historical_candles(self, symbol: str, interval_minutes: int, day: date) -> list[dict]:
+        """Real intraday candles for an INDEX (underlying) straight from
+        Angel One's own server (getCandleData) - NOT reconstructed from our
+        own polled ticks. Angel remembers the whole day's candles
+        regardless of how many times our own process restarts, which our
+        own price_history/*.csv (wiped on Render's ephemeral filesystem on
+        every restart) cannot. Used to backfill price_history right after
+        (re)connecting, so a fresh Render container isn't stuck needing to
+        re-accumulate ticks in real time before the strategy has enough
+        history (4+ candles) to evaluate anything.
+
+        Returns the same shape as candles.py's build_candles(): a list of
+        {"time": epoch_seconds, "open", "high", "low", "close"}, sorted
+        ascending."""
+        self._ensure_logged_in()
+        symbol = symbol.upper()
+        exch, token = INDEX_SPOT_TOKEN[symbol]
+        interval_name = {1: "ONE_MINUTE", 3: "THREE_MINUTE", 5: "FIVE_MINUTE"}.get(interval_minutes)
+        if interval_name is None:
+            raise ValueError(f"Unsupported interval for historical candles: {interval_minutes}")
+
+        now = now_ist()
+        to_time = now if day == now.date() else datetime.combine(day, dtime(15, 30))
+        params = {
+            "exchange": exch,
+            "symboltoken": token,
+            "interval": interval_name,
+            "fromdate": f"{day:%Y-%m-%d} 09:15",
+            "todate": to_time.strftime("%Y-%m-%d %H:%M"),
+        }
+        resp = self.connect.getCandleData(params)
+        if not resp or not resp.get("status"):
+            raise RuntimeError(f"Historical candle fetch failed for {symbol}: {resp}")
+
+        candles = []
+        for row in resp.get("data") or []:
+            ts_str, o, h, l, c = row[0], row[1], row[2], row[3], row[4]
+            dt = datetime.fromisoformat(ts_str)  # e.g. "2026-09-29T09:15:00+05:30" - already tz-aware
+            candles.append({
+                "time": int(dt.timestamp()),
+                "open": float(o), "high": float(h), "low": float(l), "close": float(c),
+            })
+        return candles
+
 
 class AngelOneClientProxy:
     """Drop-in replacement for AngelOneClient that runs the real client in
@@ -394,6 +439,9 @@ class AngelOneClientProxy:
 
     def get_option_chain(self, symbol: str, strikes_around_atm: int = 10) -> OptionChainSnapshot:
         return self._call("get_option_chain", symbol, strikes_around_atm=strikes_around_atm)
+
+    def get_historical_candles(self, symbol: str, interval_minutes: int, day: date) -> list[dict]:
+        return self._call("get_historical_candles", symbol, interval_minutes, day)
 
 
 if __name__ == "__main__":

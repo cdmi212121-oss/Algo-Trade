@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import time as dtime
 
 try:
@@ -29,7 +29,7 @@ except ImportError:
 from angel_data import AngelOneClientProxy, _require_env
 from candles import candles_from_ticks
 from config import TradingConfig
-from ist_clock import is_trading_day, now_ist
+from ist_clock import IST, is_trading_day, now_ist, today_ist
 from market_data import OptionChainSnapshot, instrument_key
 from paper_broker import ExitReason, OrderType, PaperBroker, Side
 from risk_manager import RiskManager
@@ -136,6 +136,8 @@ class TradingEngine:
             try:
                 self.data_feed_checkpoint = "connecting"
                 client = AngelOneClientProxy()
+                self.data_feed_checkpoint = "backfilling_history"
+                self._backfill_history(client)
                 with self.lock:
                     self.client = client
                 self.data_feed_checkpoint = "connected"
@@ -148,6 +150,54 @@ class TradingEngine:
                 log.error("Angel One data feed connection failed, retrying in %ss: %s",
                           backoff_s, self.data_feed_error)
                 time.sleep(backoff_s)
+
+    def _backfill_history(self, client: AngelOneClientProxy) -> None:
+        """Fetch today's REAL candles for each tradable symbol straight
+        from Angel One's own server and write them into price_history/*.csv
+        as synthetic ticks, BEFORE self.client is exposed to the tick loop
+        (so nothing can race with these writes). This is what makes
+        Render's ephemeral filesystem (wiped on every restart) a non-issue
+        for the strategy's "need 4+ candles" gate: Angel remembers the
+        whole day regardless of how many times our own process restarts,
+        so every reconnect fully repopulates local history instead of
+        starting from zero. Four synthetic ticks per real candle (open/
+        high/low/close at +0/15/30/45s) round-trip correctly through
+        candles_from_ticks' own max/min bucketing for any interval that's a
+        multiple of a minute (1-min or 3-min), so this doesn't need to know
+        which interval the strategy will actually use.
+
+        Best-effort per symbol - a failure is logged and skipped, never
+        blocks the others or the connection from completing; the strategy
+        simply rebuilds from live ticks as before if this doesn't produce
+        anything."""
+        day = today_ist()
+        if now_ist().time() < dtime(9, 15):
+            # Nothing to backfill yet - requesting a range whose "to" time
+            # is before market open (and before "from") isn't just empty,
+            # Angel's server returns a malformed/empty response for it,
+            # which would otherwise look like a real failure in the log.
+            log.info("Skipping historical backfill - before market open (09:15), nothing to fetch yet.")
+            return
+        for symbol in TRADABLE_SYMBOLS:
+            try:
+                candles = client.get_historical_candles(symbol, 1, day)
+            except Exception:
+                log.exception("Historical backfill failed for %s (non-fatal - "
+                               "will rebuild from live ticks instead)", symbol)
+                continue
+            if not candles:
+                continue
+            os.makedirs(PRICE_HISTORY_DIR, exist_ok=True)
+            path = os.path.join(PRICE_HISTORY_DIR, f"{symbol}_{day.isoformat()}.csv")
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["timestamp", "ltp"])
+                for c in candles:
+                    base = datetime.fromtimestamp(c["time"], tz=IST).replace(tzinfo=None)
+                    for offset, price in [(0, c["open"]), (15, c["high"]), (30, c["low"]), (45, c["close"])]:
+                        writer.writerow([(base + timedelta(seconds=offset)).isoformat(timespec="seconds"), price])
+            log.info("Backfilled %d real candles for %s from Angel One - history survives restarts now.",
+                      len(candles), symbol)
 
     def _alert_position_created(self) -> None:
         """Audible alert the moment the algo itself opens a position (auto

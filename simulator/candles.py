@@ -13,6 +13,8 @@ import csv
 import os
 from datetime import datetime
 
+from ist_clock import IST
+
 PRICE_HISTORY_DIR = "price_history"
 
 
@@ -34,7 +36,16 @@ def candles_from_ticks(ticks: list[tuple[datetime, float]], interval_minutes: in
     bucket_seconds = interval_minutes * 60
     buckets: dict[int, list[float]] = {}
     for ts, price in ticks:
-        bucket_start = int(ts.timestamp()) // bucket_seconds * bucket_seconds
+        # ts is naive (our own IST wall-clock reading, per ist_clock.py) -
+        # datetime.timestamp() on a naive value assumes the HOST's own
+        # system timezone, which is UTC on Render's container but IST
+        # locally. Attaching IST explicitly makes the resulting epoch
+        # correct and host-independent either way - previously this
+        # silently shifted every bucket by 5.5h on Render (self-consistent
+        # among our own ticks so it never broke swing detection, but wrong
+        # for any chart display, and would misalign against real Angel
+        # candles from get_historical_candles).
+        bucket_start = int(ts.replace(tzinfo=IST).timestamp()) // bucket_seconds * bucket_seconds
         buckets.setdefault(bucket_start, []).append(price)
 
     candles = []
