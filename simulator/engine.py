@@ -178,7 +178,15 @@ class TradingEngine:
             # which would otherwise look like a real failure in the log.
             log.info("Skipping historical backfill - before market open (09:15), nothing to fetch yet.")
             return
-        for symbol in TRADABLE_SYMBOLS:
+        for i, symbol in enumerate(TRADABLE_SYMBOLS):
+            if i > 0:
+                # Same spacing rationale as ORB's own candle-API calls
+                # (angel_data.py's range_candles) - firing these back-to-
+                # back with no delay risks tripping Angel's own rate
+                # limiter, confirmed happening to ORB on 2026-09-28/29
+                # (a self-inflicted "Access denied because of exceeding
+                # access rate" from calling this same endpoint too fast).
+                time.sleep(1.0)
             try:
                 candles = client.get_historical_candles(symbol, 1, day)
             except Exception:
