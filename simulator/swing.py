@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-CONFIRM_CANDLES = 3  # consecutive opposite-direction candles to confirm a swing
+# Consecutive opposite-direction candles to confirm a swing. Was 3 (the
+# literal course rule, Topic 6) - reduced to 1 per explicit user instruction
+# (2026-09-29): confirms a swing the instant a single opposite candle
+# appears, catching breaks much earlier at the real cost of more false/
+# whipsaw signals, especially in choppy/sideways conditions (like most of
+# 2026-09-28's morning session, which would have produced far more
+# swing reversals under this rule).
+CONFIRM_CANDLES = 1
 
 
 def candle_bias(candle: dict) -> str:

@@ -5,7 +5,8 @@ Only data endpoints are used - placeOrder is never called.
 import json
 import logging
 import time as _time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pyotp
 import requests
@@ -29,16 +30,50 @@ def login():
     return api
 
 
+MAIN_SIMULATOR_CACHE = Path(__file__).resolve().parent.parent / "simulator" / "tools" / "cache" / "angel_instruments.json"
+
+
+def _atomic_write(path: Path, data) -> None:
+    """Write via a temp file + os.replace (a single OS-level rename), so a
+    process killed mid-write can never leave a truncated/corrupted cache
+    file behind - either the old complete file stays, or the new complete
+    file replaces it, never a mix."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(path)
+
+
 def load_scrip_master():
     """Download the instrument master once per day and cache it."""
     cache = config.BASE_DIR / f"scrip_master_{date.today():%Y%m%d}.json"
     if cache.exists():
-        return json.loads(cache.read_text())
+        try:
+            return json.loads(cache.read_text())
+        except json.JSONDecodeError:
+            log.warning("Today's instrument cache is corrupted - refetching.")
+
+    # Reuse the main simulator's own cache if it's fresh (same file, same
+    # data - it's the identical public instrument list, not account-
+    # specific) - avoids an unnecessary ~36MB download right in this exact
+    # critical 9:30-9:45 AM window, when Angel's own rate limiter has
+    # already been observed to be touchy (2026-09-28).
+    try:
+        if MAIN_SIMULATOR_CACHE.exists():
+            age = datetime.now() - datetime.fromtimestamp(MAIN_SIMULATOR_CACHE.stat().st_mtime)
+            if age < timedelta(hours=20):
+                data = json.loads(MAIN_SIMULATOR_CACHE.read_text())
+                _atomic_write(cache, data)
+                log.info("Reused main simulator's instrument cache (%.1fh old) - skipped the download.",
+                         age.total_seconds() / 3600)
+                return data
+    except Exception:
+        log.exception("Could not reuse main simulator's instrument cache (non-fatal, falling back to download)")
+
     for old in config.BASE_DIR.glob("scrip_master_*.json"):
         old.unlink()
     log.info("Downloading Angel instrument master...")
     data = requests.get(SCRIP_MASTER_URL, timeout=60).json()
-    cache.write_text(json.dumps(data))
+    _atomic_write(cache, data)
     return data
 
 

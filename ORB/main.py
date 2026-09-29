@@ -58,8 +58,16 @@ def main():
             strat, ce, pe = build_ranges(api, day)
             break
         except Exception as e:
-            log.warning("Range build failed (%s), retrying...", e)
-            _time.sleep(5)
+            # build_ranges() makes 3 candle-API calls (spot + CE + PE) per
+            # attempt - a short retry delay here means retrying the whole
+            # thing re-fires all 3 every time, which can itself trip
+            # Angel's own rate limiter within a handful of seconds
+            # (confirmed live 2026-09-28: 5 attempts at 5s apart -> "Access
+            # denied because of exceeding access rate" on every retry,
+            # never recovering). 20s gives that rate-limit window real time
+            # to reset between attempts instead of compounding it.
+            log.warning("Range build failed (%s), retrying in 20s...", e)
+            _time.sleep(20)
     else:
         raise SystemExit("Could not build opening range.")
 

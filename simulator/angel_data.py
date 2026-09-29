@@ -144,15 +144,30 @@ class AngelOneClient:
         if os.path.exists(INSTRUMENT_CACHE_PATH):
             age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(INSTRUMENT_CACHE_PATH))
             if age < INSTRUMENT_CACHE_MAX_AGE:
-                with open(INSTRUMENT_CACHE_PATH, "r") as f:
-                    self._instruments = json.load(f)
-                    return self._instruments
+                try:
+                    with open(INSTRUMENT_CACHE_PATH, "r") as f:
+                        self._instruments = json.load(f)
+                        return self._instruments
+                except (json.JSONDecodeError, OSError):
+                    # Corrupted cache (e.g. a previous write got killed
+                    # mid-way through - confirmed happening in practice,
+                    # given how often this process gets killed by the OS
+                    # under memory pressure) - fall through to a fresh
+                    # download rather than staying broken until someone
+                    # notices and deletes the file by hand.
+                    print(f"WARNING: instrument cache at {INSTRUMENT_CACHE_PATH} is corrupted - redownloading.", flush=True)
 
         resp = requests.get(INSTRUMENT_MASTER_URL, timeout=60)
         resp.raise_for_status()
         data = resp.json()
-        with open(INSTRUMENT_CACHE_PATH, "w") as f:
+        # Write atomically (temp file + os.replace, which is a single OS-
+        # level rename) so a process killed mid-write can never leave a
+        # truncated/corrupted cache file behind - either the old complete
+        # file stays, or the new complete file replaces it, never a mix.
+        tmp_path = INSTRUMENT_CACHE_PATH + ".tmp"
+        with open(tmp_path, "w") as f:
             json.dump(data, f)
+        os.replace(tmp_path, INSTRUMENT_CACHE_PATH)
         self._instruments = data
         return data
 
